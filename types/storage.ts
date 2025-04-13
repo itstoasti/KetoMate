@@ -8,6 +8,8 @@ export interface Task {
   pomodoroActive: boolean;
   pomodoroEndTime: string | null;
   date: string; // ISO string format for the task date
+  time?: string; // Optional time in 24-hour format (HH:MM)
+  notificationId?: string; // ID of the scheduled notification for this task
 }
 
 export interface Note {

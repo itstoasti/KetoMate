@@ -48,7 +48,6 @@ export function Stats({ stats }: StatsProps) {
   };
   
   const nextLevelXp = getNextLevelXp(level);
-  const earnedBadges = badges?.filter(b => b.earned) ?? [];
 
   return (
     <View style={[styles.container, { 
@@ -89,24 +88,9 @@ export function Stats({ stats }: StatsProps) {
         <View style={[styles.divider, { backgroundColor: isDark ? '#444444' : '#E2E8F0' }]} />
         <View style={styles.stat}>
           <Text style={[styles.label, { color: isDark ? '#FFFFFF' : '#1A1A1A' }]}>Pomodoro XP</Text>
-          <Text style={[styles.value, { color: '#FF6B00' }]}>{pomodoroXp}</Text>
+          <Text style={[styles.value, { color: '#FF6B00' }]}>{stats.totalPomodoros * 5}</Text>
         </View>
       </View>
-      {earnedBadges.length > 0 && (
-        <View style={[styles.badges, { borderTopColor: isDark ? '#444444' : '#E2E8F0' }]}>
-          <Text style={[styles.badgesTitle, { color: isDark ? '#FFFFFF' : '#1A1A1A' }]}>
-            🏅 {earnedBadges.length} Badge{earnedBadges.length !== 1 && 's'}
-          </Text>
-          <View style={styles.badgeList}>
-            {earnedBadges.map((badge) => (
-              <View key={badge.id} style={[styles.badge, { backgroundColor: isDark ? '#1A1A1A' : '#F1F5F9' }]}>
-                <Text style={[styles.badgeEmoji, { color: isDark ? '#FFFFFF' : '#1A1A1A' }]}>{badge.emoji}</Text>
-                <Text style={[styles.badgeTitle, { color: isDark ? '#FFFFFF' : '#1A1A1A' }]}>{badge.title}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      )}
     </View>
   );
 }
@@ -137,32 +121,5 @@ const styles = StyleSheet.create({
   },
   divider: {
     width: 1,
-  },
-  badges: {
-    borderTopWidth: 1,
-  },
-  badgesTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  badgeList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  badge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 16,
-  },
-  badgeEmoji: {
-    fontSize: 16,
-  },
-  badgeTitle: {
-    fontSize: 14,
-  },
+  }
 });

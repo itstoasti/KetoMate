@@ -312,13 +312,21 @@ export async function getStorageData(): Promise<Storage> {
 
 export async function setStorageData(data: Storage): Promise<void> {
   try {
-    // Log the data being saved to help debug
-    console.log('Saving data to AsyncStorage, freezeTokens:', data.stats.freezeTokens);
+    // Calculate approximate size for diagnostic purposes
+    const jsonData = JSON.stringify(data);
+    const sizeInKB = (jsonData.length / 1024).toFixed(2);
+    
+    // Log more detailed information
+    console.log(`[setStorageData] Saving data to AsyncStorage (${sizeInKB} KB)`);
+    console.log(`[setStorageData] Stats summary: freezeTokens: ${data.stats.freezeTokens}, tasks: ${data.tasks.length}, level: ${data.stats.level}`);
     
     // Ensure we're saving the data correctly
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    await AsyncStorage.setItem(STORAGE_KEY, jsonData);
+    console.log('[setStorageData] Data saved successfully');
   } catch (error) {
-    console.error('Error saving data:', error);
+    console.error('[setStorageData] !!! ERROR SAVING DATA !!!', error);
+    // Rethrow the error so the caller can handle it appropriately
+    throw new Error(`Failed to save data: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -425,6 +433,8 @@ export async function autoEndDay(storage: Storage): Promise<Storage | null> {
     return null;
   }
   
+  console.log('[autoEndDay] A new day has been detected, processing auto-end-day');
+  
   // Count completed tasks for yesterday
   const completedTasks = storage.tasks.filter(task => task.completed);
   const totalTasks = storage.tasks.length;
@@ -433,6 +443,42 @@ export async function autoEndDay(storage: Storage): Promise<Storage | null> {
   // If we've completed at least 90% of tasks, or if we've completed at least one task, 
   // count it for the streak (this ensures people with just a few tasks don't lose their streak)
   const taskThresholdMet = completionPercentage >= 90 || (totalTasks > 0 && completedTasks.length > 0);
+  console.log(`[autoEndDay] Task threshold check: ${completedTasks.length} completed tasks out of ${totalTasks} total tasks`);
+  console.log(`[autoEndDay] Completion percentage: ${completionPercentage.toFixed(1)}%, threshold met: ${taskThresholdMet}`);
+  
+  // Handle streak based on task completion, similar to handleEndDay
+  let newStreak;
+  let newFreezeTokens = storage.stats.freezeTokens;
+  let customMessage = null;
+  
+  if (taskThresholdMet) {
+    // If we completed tasks, increment streak
+    newStreak = storage.stats.streak + 1;
+    
+    // Check if we earned a freeze token at this streak milestone
+    console.log(`[autoEndDay] Current streak: ${storage.stats.streak}, New streak: ${newStreak}, Current freeze tokens: ${storage.stats.freezeTokens}`);
+    
+    // Check if the new streak is a multiple of 7
+    if (newStreak % 7 === 0) {
+      newFreezeTokens++;
+      console.log(`[autoEndDay] Earned freeze token at streak ${newStreak}! New count: ${newFreezeTokens}`);
+    }
+  } else {
+    // No tasks completed - should decrease streak or use freeze token
+    console.log(`[autoEndDay] No tasks completed. Checking for freeze tokens (current: ${newFreezeTokens})`);
+    if (newFreezeTokens > 0) {
+      // Use a freeze token to maintain streak
+      newStreak = storage.stats.streak;
+      newFreezeTokens--;
+      customMessage = "Used a freeze token to protect your streak! ❄️";
+      console.log(`[autoEndDay] Used a freeze token to protect streak! Tokens remaining: ${newFreezeTokens}`);
+    } else {
+      // No freeze tokens, reset streak
+      newStreak = 0;
+      customMessage = "Your streak has been reset. Complete tasks today to start a new streak!";
+      console.log(`[autoEndDay] No freeze tokens available. Streak reset to 0.`);
+    }
+  }
   
   const today = new Date();
   const dayOfWeek = today.getDay(); // 0 = Sunday, 6 = Saturday
@@ -457,32 +503,6 @@ export async function autoEndDay(storage: Storage): Promise<Storage | null> {
     sundayCompleted = false;
   }
   
-  // If we didn't meet the task threshold (90% completion or at least one task), don't count it for the streak
-  if (!taskThresholdMet) {
-    // Return storage with tasks reset, but don't increment streak
-    const newStorage: Storage = {
-      tasks: storage.tasks.map((task) => ({
-        ...task,
-        completed: false,
-        pomodoroCount: 0,
-        pomodoroActive: false,
-        pomodoroEndTime: null,
-      })),
-      stats: {
-        ...storage.stats,
-        pomodoroXp: 0, // Reset daily Pomodoro XP
-        lastEndDay: new Date().toISOString(),
-        dailyTasksCompleted: 0, // Reset daily counters
-        dailyPomodorosCompleted: 0,
-        saturdayCompleted,
-        sundayCompleted,
-      },
-      notes: storage.notes,
-    };
-    
-    return newStorage;
-  }
-  
   // Calculate task XP based on effort and completed status
   const taskXp = storage.tasks.reduce((total, task) => {
     if (task.completed) {
@@ -500,7 +520,8 @@ export async function autoEndDay(storage: Storage): Promise<Storage | null> {
     return total;
   }, 0);
   
-  // Additional XP from pomodoros
+  // Additional XP from pomodoros - this XP is from task completion with pomodoros
+  // and is separate from the pomodoroXp that was already added to total XP
   const pomodoroXp = storage.tasks.reduce((total, task) => {
     if (task.pomodoroCount > 0) {
       switch (task.effort) {
@@ -517,20 +538,11 @@ export async function autoEndDay(storage: Storage): Promise<Storage | null> {
     return total;
   }, 0);
   
-  const newXp = storage.stats.xp + taskXp + pomodoroXp + storage.stats.pomodoroXp;
+  // Note: storage.stats.pomodoroXp is already added to total XP when pomodoros are completed
+  // so we don't add it again here
+  const newXp = storage.stats.xp + taskXp + pomodoroXp;
   const newLevel = calculateLevel(newXp);
-  console.log(`Auto End Day - XP: ${storage.stats.xp} + ${taskXp} + ${pomodoroXp} + ${storage.stats.pomodoroXp} = ${newXp}, Level: ${newLevel}`);
-  const newStreak = storage.stats.streak + 1;
-  
-  // Check for freeze token
-  let newFreezeTokens = storage.stats.freezeTokens;
-  console.log(`Current streak: ${storage.stats.streak}, New streak: ${newStreak}, Current freeze tokens: ${storage.stats.freezeTokens}`);
-  
-  // Fix: Check directly if the new streak is a multiple of 7
-  if (newStreak % 7 === 0) {
-    newFreezeTokens++;
-    console.log(`Earned freeze token at streak ${newStreak}! New count: ${newFreezeTokens}`);
-  }
+  console.log(`[autoEndDay] XP: ${storage.stats.xp} + ${taskXp} + ${pomodoroXp} = ${newXp}, Level: ${newLevel}`);
   
   // Check for Daily Five badge
   const earnedDailyFive = storage.stats.dailyTasksCompleted >= 5;
@@ -607,6 +619,19 @@ export async function autoEndDay(storage: Storage): Promise<Storage | null> {
     stats: updatedStats,
     notes: storage.notes,
   };
+  
+  // Log a very clear summary of what happened with the streak
+  if (storage.stats.streak !== newStreak) {
+    if (newStreak > storage.stats.streak) {
+      console.log(`[autoEndDay] STREAK INCREASED: ${storage.stats.streak} → ${newStreak} (tasks completed: ${completedTasks.length})`);
+    } else if (newStreak === 0) {
+      console.log(`[autoEndDay] STREAK RESET: ${storage.stats.streak} → 0 (no tasks completed, no freeze tokens)`);
+    } else {
+      console.log(`[autoEndDay] STREAK MAINTAINED: ${newStreak} (used freeze token)`);
+    }
+  } else {
+    console.log(`[autoEndDay] STREAK UNCHANGED: ${newStreak}`);
+  }
   
   return newStorage;
 }

@@ -1,36 +1,42 @@
 {
   "expo": {
-    "name": "HabitStreak",
+    "name": "Focus Notes",
     "slug": "habitstreak",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "habitstreak",
     "userInterfaceStyle": "automatic",
+    "sdkVersion": "51.0.0",
+    "scheme": "focusnotes",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.deanfieldz.focusnotes"
     },
     "android": {
-      "package": "com.deanfieldz.habitstreak",
+      "package": "com.deanfieldz.focusnotes",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#FFFFFF"
       },
-      "permissions": [],
-      "softwareKeyboardLayoutMode": "pan"
-    },
-    "web": {
-      "bundler": "metro",
-      "output": "single",
-      "favicon": "./assets/images/favicon.png"
+      "permissions": [
+        "NOTIFICATIONS",
+        "VIBRATE"
+      ]
     },
     "plugins": [
       "expo-router",
-      "expo-font"
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#ffffff"
+        }
+      ]
     ],
     "experiments": {
-      "typedRoutes": true
+      "typedRoutes": true,
+      "tsconfigPaths": true
     },
     "extra": {
       "router": {

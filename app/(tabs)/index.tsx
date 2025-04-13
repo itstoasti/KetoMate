@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { StyleSheet, Text, View, TextInput, Pressable, ScrollView, Modal, KeyboardAvoidingView, Platform, Keyboard, TouchableWithoutFeedback, Animated } from 'react-native';
+import { StyleSheet, Text, View, TextInput, Pressable, ScrollView, Modal, KeyboardAvoidingView, Platform, Keyboard, TouchableWithoutFeedback, Animated, Alert, Vibration } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Swipeable, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Storage, Task } from '../../types/storage';
@@ -18,7 +18,43 @@ import {
 } from '../../utils/storage';
 import { DifficultyPicker } from '../../components/DifficultyPicker';
 import { useTheme } from '../../context/ThemeContext';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { useCallback } from 'react';
+import { 
+  scheduleTaskReminder, 
+  schedulePomodoroEndNotification, 
+  cancelNotification,
+  playSound,
+  vibrate,
+  schedulePomodoroCompletionNotification,
+  schedulePomodoroStartNotification
+} from '../../utils/notifications';
+import DateTimePickerModal from "react-native-modal-datetime-picker";
+
+// Add the missing isFutureDate function
+function isFutureDate(date: Date): boolean {
+  // Create new date objects to avoid modifying the originals
+  const today = new Date();
+  const nowDateOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  
+  // Ensure we're working with a proper Date object
+  const compareDate = new Date(date);
+  const compareDateOnly = new Date(compareDate.getFullYear(), compareDate.getMonth(), compareDate.getDate());
+  
+  // Log the comparison for debugging
+  console.log(`[isFutureDate] Comparing dates - Today: ${nowDateOnly.toISOString().split('T')[0]}, Target: ${compareDateOnly.toISOString().split('T')[0]}`);
+  
+  return compareDateOnly.getTime() > nowDateOnly.getTime();
+}
+
+// Helper function to format time from HH:MM to AM/PM
+function formatTime(timeString: string): string {
+  const [hours, minutes] = timeString.split(':').map(Number);
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  const formattedHours = hours % 12 || 12; // Convert 0 to 12 for 12 AM/PM
+  const formattedMinutes = minutes.toString().padStart(2, '0');
+  return `${formattedHours}:${formattedMinutes} ${ampm}`;
+}
 
 export default function TasksScreen() {
   const [storage, setStorage] = useState<Storage | null>(null);
@@ -35,6 +71,11 @@ export default function TasksScreen() {
   const [isTaskModalVisible, setIsTaskModalVisible] = useState(false);
   const [pomodoroTimers, setPomodoroTimers] = useState<Record<string, string>>({});
   const [showNewTaskDetails, setShowNewTaskDetails] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [isDatePickerVisible, setDatePickerVisibility] = useState(false);
+  const [selectedTime, setSelectedTime] = useState<Date | null>(null);
+  const [isTimePickerVisible, setTimePickerVisibility] = useState(false);
+  const [initialPickerDate, setInitialPickerDate] = useState(new Date()); // State for initial date value
 
   // Add state to track keyboard visibility
   const [isKeyboardVisible, setKeyboardVisible] = useState(false);
@@ -62,9 +103,19 @@ export default function TasksScreen() {
     };
   }, []);
 
+  // Initial data load
   useEffect(() => {
     loadData();
   }, []);
+  
+  // Reload data when the screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      console.log('[Tasks] Tab focused, reloading data');
+      loadData();
+      return () => {}; // cleanup function
+    }, [])
+  );
 
   useEffect(() => {
     if (!storage) return;
@@ -72,47 +123,23 @@ export default function TasksScreen() {
     // Update Pomodoro timers
     const interval = setInterval(() => {
       const now = new Date();
-      const updatedTasks = storage.tasks.map(task => {
-        if (!task.pomodoroEndTime) return task;
+      const completedTaskIds: string[] = [];
+      
+      storage.tasks.forEach(task => {
+        if (!task.pomodoroEndTime) return;
         const endTime = new Date(task.pomodoroEndTime);
         if (now >= endTime) {
-          // Pomodoro completed
-          const newPomodoroXp = Math.min(
-            storage.stats.pomodoroXp + 5,
-            20
-          );
-          setStorage({
-            ...storage,
-            tasks: storage.tasks.map(t =>
-              t.id === task.id
-                ? {
-                    ...t,
-                    pomodoroCount: t.pomodoroCount + 1,
-                    pomodoroActive: false,
-                    pomodoroEndTime: null,
-                  }
-                : t
-            ),
-            stats: {
-              ...storage.stats,
-              pomodoroXp: newPomodoroXp,
-              totalPomodoros: storage.stats.totalPomodoros + 1,
-            },
-          });
-          return {
-            ...task,
-            pomodoroCount: task.pomodoroCount + 1,
-            pomodoroActive: false,
-            pomodoroEndTime: null,
-          };
+          completedTaskIds.push(task.id);
         }
-        return task;
       });
-
-      if (updatedTasks !== storage.tasks) {
-        setStorage({
-          ...storage,
-          tasks: updatedTasks,
+      
+      // Process any completed timers
+      if (completedTaskIds.length > 0) {
+        console.log(`[Pomodoro Auto-complete] Found ${completedTaskIds.length} completed timers`);
+        
+        // Process them one at a time
+        completedTaskIds.forEach(taskId => {
+          finishPomodoro(taskId, true); // true = fully completed
         });
       }
     }, 1000);
@@ -149,112 +176,392 @@ export default function TasksScreen() {
   }, [storage]);
 
   async function loadData() {
-    const data = await getStorageData();
-    
-    // Check if streak has expired (more than 1 day since last end day)
-    if (data.stats.lastEndDay && hasStreakExpired(data.stats.lastEndDay)) {
-      if (data.stats.freezeTokens > 0) {
-        data.stats.freezeTokens--;
-      } else {
-        data.stats.streak = 0;
+    try {
+      console.log('[loadData] Starting data load');
+      let data = await getStorageData();
+      
+      // Check if streak has expired (more than 1 day since last end day)
+      if (data.stats.lastEndDay && hasStreakExpired(data.stats.lastEndDay)) {
+        console.log('[loadData] Streak expired, updating stats');
+        if (data.stats.freezeTokens > 0) {
+          data.stats.freezeTokens--;
+          console.log(`[loadData] Used freeze token, ${data.stats.freezeTokens} remaining`);
+        } else {
+          data.stats.streak = 0;
+          console.log('[loadData] Reset streak to 0');
+        }
+        
+        try {
+          await setStorageData(data);
+          console.log('[loadData] Updated expired streak data');
+        } catch (streakError) {
+          console.error('[loadData] Error saving streak update:', streakError);
+          // Continue with the modified data in memory even if save failed
+        }
       }
-      await setStorageData(data);
-    }
-    
-    // Fix: Recalculate level based on XP to ensure it's up to date
-    const correctLevel = calculateLevel(data.stats.xp);
-    if (data.stats.level !== correctLevel) {
-      console.log(`Updating level from ${data.stats.level} to ${correctLevel} based on ${data.stats.xp} XP`);
-      data.stats.level = correctLevel;
-      await setStorageData(data);
-    }
-    
-    // Automatically end the day if it's a new day since last ended
-    const autoEndResult = await autoEndDay(data);
-    if (autoEndResult) {
-      await setStorageData(autoEndResult);
-      data = autoEndResult;
-    }
-    
-    // Ensure all tasks have a date property
-    let needsUpdate = false;
-    const todayISOString = new Date().toISOString();
-    
-    data.tasks = data.tasks.map(task => {
-      if (!task.date) {
-        needsUpdate = true;
-        return { ...task, date: todayISOString };
+      
+      // Fix: Recalculate level based on XP to ensure it's up to date
+      const correctLevel = calculateLevel(data.stats.xp);
+      if (data.stats.level !== correctLevel) {
+        console.log(`[loadData] Updating level from ${data.stats.level} to ${correctLevel} based on ${data.stats.xp} XP`);
+        data.stats.level = correctLevel;
+        
+        try {
+          await setStorageData(data);
+          console.log('[loadData] Updated level data');
+        } catch (levelError) {
+          console.error('[loadData] Error saving level update:', levelError);
+          // Continue with the modified data in memory even if save failed
+        }
       }
-      return task;
-    });
-    
-    // Save updated tasks if needed
-    if (needsUpdate) {
-      await setStorageData(data);
+      
+      // Automatically end the day if it's a new day since last ended
+      const autoEndResult = await autoEndDay(data);
+      if (autoEndResult) {
+        console.log('[loadData] Auto-ending day from previous session');
+        try {
+          await setStorageData(autoEndResult);
+          console.log('[loadData] Successfully saved auto-end day data');
+          data = autoEndResult;
+        } catch (autoEndError) {
+          console.error('[loadData] Error saving auto-end day data:', autoEndError);
+          // Continue with the returned data anyway
+          data = autoEndResult;
+        }
+      }
+      
+      // Ensure all tasks have a date property
+      let needsUpdate = false;
+      const todayISOString = new Date().toISOString();
+      
+      data.tasks = data.tasks.map(task => {
+        if (!task.date) {
+          console.log(`[loadData] Adding missing date to task: ${task.title}`);
+          needsUpdate = true;
+          return { ...task, date: todayISOString };
+        }
+        return task;
+      });
+      
+      // Save updated tasks if needed
+      if (needsUpdate) {
+        console.log('[loadData] Saving tasks with added date properties');
+        try {
+          await setStorageData(data);
+          console.log('[loadData] Successfully saved updated task dates');
+        } catch (datesError) {
+          console.error('[loadData] Error saving task date updates:', datesError);
+          // Continue with the modified data in memory even if save failed
+        }
+      }
+      
+      setStorage(data);
+      console.log('[loadData] Data successfully loaded and processed');
+    } catch (error) {
+      console.error('[loadData] CRITICAL ERROR during data loading:', error);
+      Alert.alert(
+        "Loading Error", 
+        "There was a problem loading your data. Some features may not work correctly.", 
+        [{ text: "OK" }]
+      );
     }
-    
-    setStorage(data);
   }
 
   const handleAddTask = async () => {
-    if (!storage || !taskTitle.trim()) return;
-
-    const now = new Date();
+    // --- Start: Basic Checks --- 
+    console.log('[handleAddTask] Add button clicked.');
+    if (!taskTitle) {
+      console.log('[handleAddTask] No task title, exiting.');
+      Alert.alert("Missing Title", "Please enter a title for the task.");
+      return;
+    }
+    if (!storage) {
+      console.error('[handleAddTask] Storage is null, cannot add task.');
+      Alert.alert("Error", "Cannot load data. Please restart the app.");
+      return;
+    }
+    console.log('[handleAddTask] Initial checks passed.');
+    // --- End: Basic Checks --- 
+    
+    // --- Start: Calculate Task Date/Time --- 
+    let finalTaskDate = selectedDate || new Date(); 
+    if (selectedTime) {
+      finalTaskDate.setHours(selectedTime.getHours());
+      finalTaskDate.setMinutes(selectedTime.getMinutes());
+    } else if (selectedDate) {
+      // If only date was selected, ensure time is start of day
+      finalTaskDate.setHours(0, 0, 0, 0);
+    } // If neither date nor time selected, finalTaskDate remains new Date()
+    console.log(`[handleAddTask] Calculated finalTaskDate: ${finalTaskDate.toISOString()}`);
+    // --- End: Calculate Task Date/Time --- 
+    
+    // --- Start: Create Task Object --- 
     const newTask: Task = {
-      id: Date.now().toString(),
-      title: taskTitle.trim(),
-      notes: newTaskNotes,
+      id: Date.now().toString() + Math.random().toString(36).substring(2, 15), // Add randomness for uniqueness
+      title: taskTitle,
+      notes: newTaskNotes || '',
       completed: false,
       effort: taskEffort,
       pomodoroCount: 0,
       pomodoroActive: false,
       pomodoroEndTime: null,
-      date: now.toISOString(), // Today's date
+      date: finalTaskDate.toISOString(),
+      time: selectedTime ? 
+        `${finalTaskDate.getHours().toString().padStart(2, '0')}:${finalTaskDate.getMinutes().toString().padStart(2, '0')}` 
+        : undefined,
+      notificationId: undefined,
     };
+    console.log('[handleAddTask] New task object created:', JSON.stringify(newTask, null, 2));
+    // --- End: Create Task Object --- 
 
-    // Check for Early Bird badge (before 8am)
-    const isEarlyBird = now.getHours() < 8;
-    let updatedStats = storage.stats;
+    // --- Start: Schedule Notification --- 
+    let scheduledNotificationId: string | undefined;
+    let isDateInFuture = false;
     
-    if (isEarlyBird && !storage.stats.badges.find(b => b.id === 'early-bird')?.earned) {
-      updatedStats = checkAndUpdateBadges({
-        ...storage.stats,
-        badges: [
-          ...storage.stats.badges,
-          {
-            id: 'early-bird',
-            title: 'Early Bird',
-            description: 'Add a task before 8am',
-            emoji: '🐦',
-            earned: true,
-            earnedAt: now.toISOString(),
-          }
-        ]
-      });
+    // Check if this is a future task before scheduling notification
+    if (selectedDate) {
+      try {
+        console.log(`[handleAddTask] Checking if task is for a future date. selectedDate: ${selectedDate.toISOString()}`);
+        isDateInFuture = isFutureDate(selectedDate);
+        console.log(`[handleAddTask] Task is for a future date: ${isDateInFuture}`);
+      } catch (dateError) {
+        console.error('[handleAddTask] Error checking future date:', dateError);
+      }
+    }
+    
+    // Only schedule notification if this is a future task
+    if (isDateInFuture) {
+      try {
+        console.log('[handleAddTask] This is a future task, scheduling notification...');
+        
+        // Add a small delay before scheduling to avoid immediate notifications
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        scheduledNotificationId = await scheduleTaskReminder(newTask);
+        if (scheduledNotificationId) {
+          newTask.notificationId = scheduledNotificationId;
+          console.log(`[handleAddTask] Notification scheduled successfully with ID: ${scheduledNotificationId}`);
+        } else {
+          console.log('[handleAddTask] scheduleTaskReminder returned no ID (likely skipped).');
+        }
+      } catch (notifError) {
+        console.error('[handleAddTask] Error during scheduleTaskReminder:', notifError);
+        // Decide if you want to proceed without notification or stop
+        Alert.alert("Notification Error", "Could not schedule task reminder, but task will be saved.");
+      }
+    } else {
+      console.log('[handleAddTask] Task is not for a future date, not scheduling notification.');
+    }
+    // --- End: Schedule Notification --- 
+    
+    // --- Start: Prepare Data for Saving --- 
+    let updatedStats = { ...storage.stats };
+    let newTasksArray: Task[] = [];
+    let newStorage: Storage;
+    
+    // Note: Temporarily simplifying badge logic - uncomment later if needed
+    // // Check for Early Bird badge 
+    // const now = new Date();
+    // if (now.getHours() < 8 && !storage.stats.badges.find(b => b.id === 'early-bird')?.earned) { 
+    //   // ... (add badge logic) ...
+    // }
+    try {
+      console.log('[handleAddTask] Preparing data for saving...');
+      // Add safety check for calendarTasksCreated property
+      if (typeof storage.stats.calendarTasksCreated === 'undefined') {
+        storage.stats.calendarTasksCreated = 0;
+      }
+      
+      // Safely check if the date is in the future
+      let isDateInFuture = false;
+      if (selectedDate) {
+        try {
+          console.log(`[handleAddTask] About to check if date is in future. selectedDate: ${selectedDate.toISOString()}`);
+          const dateToCheck = new Date(selectedDate);
+          console.log(`[handleAddTask] Date object created: ${dateToCheck.toISOString()}`);
+          isDateInFuture = isFutureDate(dateToCheck);
+          console.log(`[handleAddTask] Selected date is in future: ${isDateInFuture}`);
+        } catch (dateError) {
+          console.error('[handleAddTask] Error checking if date is in future:', dateError);
+          isDateInFuture = false;
+        }
+      }
+      
+      updatedStats.calendarTasksCreated = (storage.stats.calendarTasksCreated || 0) + (isDateInFuture ? 1 : 0);
+      
+      const currentTasks = storage.tasks || [];
+      newTasksArray = [...currentTasks, newTask];
+      
+      newStorage = {
+        ...storage,
+        tasks: newTasksArray,
+        stats: updatedStats,
+      };
+      console.log(`[handleAddTask] Prepared newStorage with ${newTasksArray.length} tasks.`);
+    // --- End: Prepare Data for Saving --- 
+    } catch (prepError) {
+      console.error('[handleAddTask] Error preparing data for saving:', prepError);
+      Alert.alert(
+        "Error", 
+        "There was a problem preparing the task data. Please try again.", 
+        [{ text: "OK" }]
+      );
+      return;
     }
 
-    const newStorage = {
-      ...storage,
-      tasks: [...storage.tasks, newTask],
-      stats: updatedStats,
-    };
+    // --- Start: Save Data and Update State --- 
+      console.log('[handleAddTask] Entering TRY block for saving...');
+      console.log(`[handleAddTask] About to save newStorage with ${newTasksArray.length} tasks.`);
+      try {
+        // For future tasks, inject a special flag to prevent unwanted notification sounds 
+        if (isDateInFuture) {
+          // Use a global flag that will disable notification sounds temporarily
+          console.log('[handleAddTask] Setting flag to prevent notification sounds for future task');
+          // @ts-ignore
+          global._blockNextNotificationSound = true;
+          
+          // Set a timeout to reset the flag after a short time
+          setTimeout(() => {
+            // @ts-ignore
+            global._blockNextNotificationSound = false;
+            console.log('[handleAddTask] Reset notification sound blocking flag');
+          }, 1000);
+        }
+        
+        console.log('[handleAddTask] >>> Calling setStorageData...');
+        await setStorageData(newStorage);
+        console.log('[handleAddTask] <<< setStorageData FINISHED successfully.');
+        
+        console.log('[handleAddTask] >>> Calling setStorage (local state)...');
+        setStorage(newStorage);
+        console.log('[handleAddTask] <<< setStorage (local state) FINISHED.');
+      } catch (error) {
+        console.error('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+        console.error('[handleAddTask] !!!!!!!!!!!! CRITICAL ERROR SAVING DATA !!!!!!!!!!!!', error);
+        console.error('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+        
+        // Try to extract more details about what might have gone wrong
+        try {
+          const dataSize = JSON.stringify(newStorage).length / 1024;
+          console.error(`[handleAddTask] Data size attempted to save: ${dataSize.toFixed(2)} KB`);
+          console.error(`[handleAddTask] Task count: ${newStorage.tasks.length}`);
+          
+          // Check for any unusually large tasks
+          const largestTask = [...newStorage.tasks].sort((a, b) => 
+            JSON.stringify(b).length - JSON.stringify(a).length
+          )[0];
+          
+          if (largestTask) {
+            const largestTaskSize = JSON.stringify(largestTask).length / 1024;
+            console.error(`[handleAddTask] Largest task (${largestTaskSize.toFixed(2)} KB): ${largestTask.title}`);
+          }
+        } catch (debugError) {
+          console.error('[handleAddTask] Error during debug analysis:', debugError);
+        }
+        
+        Alert.alert(
+          "Save Failed", 
+          "Task could not be saved. The app may have reached its storage limit or encountered another error.", 
+          [{ text: "OK" }]
+        );
+        return; // Stop execution
+      }
+      console.log('[handleAddTask] Exited TRY block for saving successfully.');
+    // --- End: Save Data and Update State --- 
 
-    await setStorageData(newStorage);
-    setStorage(newStorage);
+    // --- Start: Reset Inputs --- 
+    console.log('[handleAddTask] Resetting input fields...');
     setTaskTitle('');
+    setTaskEffort('medium');
     setNewTaskNotes('');
+    setSelectedDate(null);
+    setSelectedTime(null);
     setShowNewTaskDetails(false);
+    console.log('[handleAddTask] Input fields reset.');
+    // --- End: Reset Inputs --- 
+    
+    // --- Start: Play Sound --- 
+    try {
+      console.log('[handleAddTask] Playing sound...');
+      
+      // Only play task-complete sound (not notification sound) for future tasks
+      if (isDateInFuture) {
+        console.log('[handleAddTask] Task is for future date, only playing task-complete sound');
+        await playSound('task-complete');
+      } else {
+        // For today's tasks, we can play notification sounds
+        await playSound('task-complete');
+      }
+      
+      console.log('[handleAddTask] Sound played.');
+    } catch (soundError) {
+      console.error("[handleAddTask] Error playing sound:", soundError);
+      
+      // Try falling back to basic vibration if haptics also failed
+      try {
+        console.log('[handleAddTask] Falling back to basic vibration...');
+        if (Platform.OS === 'ios' || Platform.OS === 'android') {
+          // @ts-ignore - React Native's vibrate is not fully typed
+          Vibration.vibrate(300);
+          console.log('[handleAddTask] Basic vibration completed');
+        }
+      } catch (vibrationError) {
+        console.error('[handleAddTask] All feedback methods failed:', vibrationError);
+      }
+    }
+    // --- End: Play Sound --- 
+
+    console.log('[handleAddTask] Function finished successfully.');
   };
 
   const handleToggleTask = async (id: string) => {
     if (!storage) return;
 
+    // Find the task
     const task = storage.tasks.find(t => t.id === id);
     if (!task) return;
 
-    const newTasks = storage.tasks.map(t =>
-      t.id === id ? { ...t, completed: !t.completed } : t
-    );
+    // Toggle the task's completed state
+    const isCompleting = !task.completed;
+    
+    // Play sound when completing a task
+    if (isCompleting) {
+      try {
+        console.log('[handleToggleTask] Playing completion sound...');
+        await playSound('task-complete');
+        console.log('[handleToggleTask] Sound played successfully');
+        await vibrate();
+      } catch (error) {
+        console.error("[handleToggleTask] Error with sound or vibration:", error);
+        
+        // Try falling back to basic vibration if haptics also failed
+        try {
+          console.log('[handleToggleTask] Falling back to basic vibration...');
+          if (Platform.OS === 'ios' || Platform.OS === 'android') {
+            Vibration.vibrate(300);
+            console.log('[handleToggleTask] Basic vibration completed');
+          }
+        } catch (vibrationError) {
+          console.error('[handleToggleTask] All feedback methods failed:', vibrationError);
+        }
+      }
+    }
+    
+    // If completing the task, cancel any scheduled notifications
+    if (isCompleting && task.notificationId) {
+      await cancelNotification(task.notificationId);
+    }
+    
+    const newTasks = storage.tasks.map(t => {
+      if (t.id === id) {
+        return {
+          ...t,
+          completed: !t.completed,
+          notificationId: isCompleting ? undefined : t.notificationId
+        };
+      }
+      return t;
+    });
 
     // Calculate XP for completed tasks
     let newXp = storage.stats.xp;
@@ -342,8 +649,21 @@ export default function TasksScreen() {
       stats: updatedStats,
     };
 
-    await setStorageData(newStorage);
-    setStorage(newStorage);
+    try {
+      console.log(`[handleToggleTask] Saving ${newTasks.length} tasks, taskID: ${id}`);
+      await setStorageData(newStorage);
+      console.log('[handleToggleTask] Data saved successfully');
+      setStorage(newStorage);
+      // Show a motivational message when task is completed
+      setMessage(getMotivationalMessage());
+    } catch (error) {
+      console.error('[handleToggleTask] ERROR saving data:', error);
+      Alert.alert(
+        "Toggle Failed", 
+        "Could not update task status. Please try again.",
+        [{ text: "OK" }]
+      );
+    }
   };
 
   const handleEndDay = async () => {
@@ -497,107 +817,41 @@ export default function TasksScreen() {
       notes: storage.notes,
     };
 
-    await setStorageData(newStorage);
-    setStorage(newStorage);
-    // Use custom message if available, otherwise use motivational message
-    setMessage(customMessage || getMotivationalMessage());
-  };
-
-  const toggleTheme = () => {
-    setTheme(isDark ? 'light' : 'dark');
-  };
-
-  // Add function to start a pomodoro timer
-  const startPomodoro = async (taskId: string) => {
-    if (!storage) return;
-    
-    // Standard pomodoro is 25 minutes
-    const endTime = new Date();
-    endTime.setMinutes(endTime.getMinutes() + 25);
-    
-    const newTasks = storage.tasks.map(task => 
-      task.id === taskId ? {
-        ...task,
-        pomodoroActive: true,
-        pomodoroEndTime: endTime.toISOString()
-      } : task
-    );
-    
-    const newStorage = {
-      ...storage,
-      tasks: newTasks
-    };
-    
-    await setStorageData(newStorage);
-    setStorage(newStorage);
-  };
-  
-  // Add function to complete a pomodoro session
-  const completePomodoro = async (taskId: string) => {
-    if (!storage) return;
-    
-    const task = storage.tasks.find(t => t.id === taskId);
-    if (!task) return;
-    
-    // Increment daily pomodoros counter
-    const dailyPomodorosCompleted = storage.stats.dailyPomodorosCompleted + 1;
-    
-    const newTasks = storage.tasks.map(t => 
-      t.id === taskId ? {
-        ...t,
-        pomodoroCount: t.pomodoroCount + 1,
-        pomodoroActive: false,
-        pomodoroEndTime: null
-      } : t
-    );
-    
-    // Check for Extreme Focus badge - 5 pomodoros in a day
-    let updatedStats = {
-      ...storage.stats,
-      totalPomodoros: storage.stats.totalPomodoros + 1,
-      pomodoroXp: Math.min(storage.stats.pomodoroXp + 5, 20), // Cap daily pomodoro XP at 20
-      dailyPomodorosCompleted,
-    };
-    
-    if (dailyPomodorosCompleted >= 5 && !storage.stats.badges.find(b => b.id === 'extreme-focus')?.earned) {
-      updatedStats = {
-        ...updatedStats,
-        badges: [
-          ...updatedStats.badges,
-          {
-            id: 'extreme-focus',
-            title: 'Extreme Focus',
-            description: 'Complete 5 Pomodoro sessions in a single day',
-            emoji: '🧠',
-            earned: true,
-            earnedAt: new Date().toISOString(),
-          }
-        ]
-      };
+    try {
+      console.log(`[handleEndDay] Ending day, clearing completions from ${storage.tasks.length} tasks`);
+      await setStorageData(newStorage);
+      console.log('[handleEndDay] End of day data saved successfully');
+      setStorage(newStorage);
+      // Use custom message if available, otherwise use motivational message
+      setMessage(customMessage || getMotivationalMessage());
+    } catch (error) {
+      console.error('[handleEndDay] ERROR saving end of day data:', error);
+      Alert.alert(
+        "End Day Failed", 
+        "Could not process end of day. Please try again or restart the app.",
+        [{ text: "OK" }]
+      );
     }
-    
-    // Check for other pomodoro-related badges
-    updatedStats = await checkAndUpdateBadges(updatedStats);
-    
-    const newStorage = {
-      ...storage,
-      tasks: newTasks,
-      stats: updatedStats
-    };
-    
-    await setStorageData(newStorage);
-    setStorage(newStorage);
   };
   
   // Add function to cancel a pomodoro timer
   const cancelPomodoro = async (taskId: string) => {
     if (!storage) return;
     
+    const task = storage.tasks.find(t => t.id === taskId);
+    if (!task) return;
+    
+    // Cancel any existing notification for this task
+    if (task.notificationId) {
+      await cancelNotification(task.notificationId);
+    }
+    
     const newTasks = storage.tasks.map(task => 
       task.id === taskId ? {
         ...task,
         pomodoroActive: false,
-        pomodoroEndTime: null
+        pomodoroEndTime: null,
+        notificationId: undefined
       } : task
     );
     
@@ -606,8 +860,19 @@ export default function TasksScreen() {
       tasks: newTasks
     };
     
-    await setStorageData(newStorage);
-    setStorage(newStorage);
+    try {
+      console.log(`[cancelPomodoro] Canceling pomodoro for task ID: ${taskId}`);
+      await setStorageData(newStorage);
+      console.log('[cancelPomodoro] Data saved successfully');
+      setStorage(newStorage);
+    } catch (error) {
+      console.error('[cancelPomodoro] ERROR saving data:', error);
+      Alert.alert(
+        "Cancel Failed", 
+        "Could not cancel Pomodoro timer. Please try again.",
+        [{ text: "OK" }]
+      );
+    }
   };
   
   // Add function to open task details modal
@@ -633,9 +898,20 @@ export default function TasksScreen() {
       tasks: newTasks
     };
     
-    await setStorageData(newStorage);
-    setStorage(newStorage);
-    setIsTaskModalVisible(false);
+    try {
+      console.log(`[saveTaskNotes] Saving notes for task ID: ${selectedTask.id}`);
+      await setStorageData(newStorage);
+      console.log('[saveTaskNotes] Notes saved successfully');
+      setStorage(newStorage);
+      setIsTaskModalVisible(false);
+    } catch (error) {
+      console.error('[saveTaskNotes] ERROR saving notes:', error);
+      Alert.alert(
+        "Save Failed", 
+        "Could not save task notes. Please try again.",
+        [{ text: "OK" }]
+      );
+    }
   };
 
   // Add function to delete a task
@@ -649,10 +925,285 @@ export default function TasksScreen() {
       tasks: newTasks
     };
     
-    await setStorageData(newStorage);
-    setStorage(newStorage);
+    try {
+      console.log(`[handleDeleteTask] Deleting task ID: ${taskId}`);
+      await setStorageData(newStorage);
+      console.log('[handleDeleteTask] Task deleted successfully');
+      setStorage(newStorage);
+    } catch (error) {
+      console.error('[handleDeleteTask] ERROR deleting task:', error);
+      Alert.alert(
+        "Delete Failed", 
+        "Could not delete task. Please try again.",
+        [{ text: "OK" }]
+      );
+    }
   };
   
+  // Add function to start a pomodoro timer
+  const startPomodoro = async (taskId: string) => {
+    if (!storage) return;
+    
+    // Find the task
+    const task = storage.tasks.find(t => t.id === taskId);
+    if (!task) {
+      console.error(`[startPomodoro] Task with ID ${taskId} not found`);
+      return;
+    }
+
+    // Check if there's already an active pomodoro timer for any task
+    const activePomodoro = storage.tasks.find(t => t.pomodoroActive);
+    if (activePomodoro) {
+      console.log(`[startPomodoro] Cannot start a new pomodoro because task "${activePomodoro.title}" has an active timer`);
+      Alert.alert(
+        "Pomodoro Already Running",
+        `You already have an active pomodoro timer for "${activePomodoro.title}". Please wait for it to finish or cancel it before starting a new one.`,
+        [{ text: "OK" }]
+      );
+      return;
+    }
+    
+    // Standard pomodoro is 25 minutes
+    const endTime = new Date();
+    endTime.setMinutes(endTime.getMinutes() + 25);
+    
+    // Cancel any existing notification for this task
+    if (task.notificationId) {
+      await cancelNotification(task.notificationId);
+    }
+    
+    // First, show the start notification with correct time info
+    try {
+      await schedulePomodoroStartNotification(endTime, task.title);
+      console.log(`[startPomodoro] Displayed start notification`);
+    } catch (startError) {
+      console.error('[startPomodoro] Error showing start notification:', startError);
+    }
+    
+    // Then schedule the end notification for when the timer finishes
+    let notificationId;
+    try {
+      notificationId = await schedulePomodoroEndNotification(endTime, task.title);
+      console.log(`[startPomodoro] Scheduled end notification with ID: ${notificationId}`);
+    } catch (notifError) {
+      console.error('[startPomodoro] Error scheduling end notification:', notifError);
+      // Continue without notification
+    }
+    
+    const newTasks = storage.tasks.map(t => 
+      t.id === taskId ? {
+        ...t,
+        pomodoroActive: true,
+        pomodoroEndTime: endTime.toISOString(),
+        notificationId // Store the notification ID
+      } : t
+    );
+    
+    const newStorage = {
+      ...storage,
+      tasks: newTasks
+    };
+    
+    try {
+      console.log(`[startPomodoro] Starting pomodoro for task ID: ${taskId}, ending at ${endTime.toISOString()}`);
+      await setStorageData(newStorage);
+      console.log('[startPomodoro] Pomodoro started successfully');
+      setStorage(newStorage);
+    } catch (error) {
+      console.error('[startPomodoro] ERROR starting pomodoro:', error);
+      Alert.alert(
+        "Pomodoro Start Failed", 
+        "Could not start the pomodoro timer. Please try again.",
+        [{ text: "OK" }]
+      );
+    }
+  };
+  
+  // Add function to complete a pomodoro session
+  const completePomodoro = async (taskId: string) => {
+    if (!storage) return;
+    
+    const task = storage.tasks.find(t => t.id === taskId);
+    if (!task) {
+      console.error(`[completePomodoro] Task with ID ${taskId} not found`);
+      return;
+    }
+    
+    // Check if timer is actually completed or manually stopped
+    const now = new Date();
+    const endTime = task.pomodoroEndTime ? new Date(task.pomodoroEndTime) : null;
+    const isFullyCompleted = endTime && now >= endTime;
+    
+    // If manually stopping, show a confirmation alert
+    if (!isFullyCompleted) {
+      Alert.alert(
+        "Cancel Pomodoro?",
+        "If you stop now, you won't receive XP or credit for this Pomodoro session. You only get credit for completing the full 25 minutes.",
+        [
+          {
+            text: "Continue Timer",
+            style: "cancel"
+          },
+          {
+            text: "Stop Anyway",
+            onPress: () => finishPomodoro(taskId, isFullyCompleted)
+          }
+        ]
+      );
+      return;
+    }
+    
+    // If it's fully completed, proceed without confirmation
+    finishPomodoro(taskId, isFullyCompleted);
+  };
+  
+  // Helper function to finish the pomodoro process after potential confirmation
+  const finishPomodoro = async (taskId: string, isFullyCompleted: boolean) => {
+    if (!storage) return;
+    
+    const task = storage.tasks.find(t => t.id === taskId);
+    if (!task) {
+      console.error(`[finishPomodoro] Task with ID ${taskId} not found`);
+      return;
+    }
+    
+    // Cancel any existing notification for this task
+    if (task.notificationId) {
+      try {
+        await cancelNotification(task.notificationId);
+        console.log(`[finishPomodoro] Canceled notification with ID: ${task.notificationId}`);
+      } catch (cancelError) {
+        console.error('[finishPomodoro] Error canceling notification:', cancelError);
+        // Continue even if notification cancellation fails
+      }
+    }
+    
+    console.log(`[finishPomodoro] Timer fully completed: ${isFullyCompleted}`);
+    
+    // Schedule a completion notification only if the timer was fully completed
+    if (isFullyCompleted) {
+      try {
+        // REMOVED: All notification logic was here
+        // We rely entirely on the notification scheduled by schedulePomodoroEndNotification
+        // This notification is scheduled when the Pomodoro starts and will fire automatically
+        // when the timer ends
+        console.log(`[finishPomodoro] Timer completed - notification will be handled by the system`);
+      } catch (error) {
+        console.error('[finishPomodoro] Error:', error);
+      }
+    }
+    
+    // Play completion sound and vibrate (always give feedback even for manual stops)
+    try {
+      console.log('[finishPomodoro] Playing completion sound...');
+      await playSound('pomodoro-end');
+      console.log('[finishPomodoro] Sound played successfully');
+      await vibrate();
+      console.log('[finishPomodoro] Played completion sound and vibration');
+    } catch (soundError) {
+      console.error("[finishPomodoro] Error with sound or vibration:", soundError);
+      
+      // Try falling back to basic vibration if haptics also failed
+      try {
+        console.log('[finishPomodoro] Falling back to basic vibration...');
+        if (Platform.OS === 'ios' || Platform.OS === 'android') {
+          Vibration.vibrate([300, 200, 300]);
+          console.log('[finishPomodoro] Basic vibration completed');
+        }
+      } catch (vibrationError) {
+        console.error('[finishPomodoro] All feedback methods failed:', vibrationError);
+      }
+    }
+    
+    // Only update stats and award XP if timer was fully completed
+    let updatedStats = { ...storage.stats };
+    let pomodoroCount = task.pomodoroCount;
+    
+    if (isFullyCompleted) {
+      // Increment daily pomodoros counter
+      const dailyPomodorosCompleted = storage.stats.dailyPomodorosCompleted + 1;
+      
+      // Increment the pomodoro count for the task
+      pomodoroCount = task.pomodoroCount + 1;
+      
+      // Calculate new pomodoro XP
+      const newPomodoroXp = Math.min(storage.stats.pomodoroXp + 5, 20); // Cap daily pomodoro XP at 20
+      
+      // Update stats - adding the new pomodoro XP to total XP as well
+      updatedStats = {
+        ...storage.stats,
+        totalPomodoros: storage.stats.totalPomodoros + 1,
+        pomodoroXp: newPomodoroXp,
+        xp: storage.stats.xp + 5, // Add 5 XP to overall XP immediately
+        dailyPomodorosCompleted,
+      };
+      
+      // Check for Extreme Focus badge - 5 pomodoros in a day
+      if (dailyPomodorosCompleted >= 5 && !storage.stats.badges.find(b => b.id === 'extreme-focus')?.earned) {
+        console.log('[finishPomodoro] Earned Extreme Focus badge');
+        updatedStats = {
+          ...updatedStats,
+          badges: [
+            ...updatedStats.badges,
+            {
+              id: 'extreme-focus',
+              title: 'Extreme Focus',
+              description: 'Complete 5 Pomodoro sessions in a single day',
+              emoji: '🧠',
+              earned: true,
+              earnedAt: new Date().toISOString(),
+            }
+          ]
+        };
+      }
+      
+      // Check for other pomodoro-related badges
+      try {
+        updatedStats = await checkAndUpdateBadges(updatedStats);
+        console.log('[finishPomodoro] Checked and updated badges');
+      } catch (badgeError) {
+        console.error('[finishPomodoro] Error checking badges:', badgeError);
+        // Continue with the current stats
+      }
+    } else {
+      console.log('[finishPomodoro] Timer was manually stopped before completion. No XP or count awarded.');
+    }
+    
+    const newTasks = storage.tasks.map(t => 
+      t.id === taskId ? {
+        ...t,
+        pomodoroCount: pomodoroCount,
+        pomodoroActive: false,
+        pomodoroEndTime: null,
+        notificationId: undefined
+      } : t
+    );
+    
+    const newStorage = {
+      ...storage,
+      tasks: newTasks,
+      stats: updatedStats
+    };
+    
+    try {
+      console.log(`[finishPomodoro] Completing pomodoro for task ID: ${taskId}`);
+      await setStorageData(newStorage);
+      console.log('[finishPomodoro] Pomodoro completed successfully');
+      setStorage(newStorage);
+    } catch (error) {
+      console.error('[finishPomodoro] ERROR completing pomodoro:', error);
+      Alert.alert(
+        "Pomodoro Completion Failed", 
+        "Could not save the completed pomodoro. Please try again.",
+        [{ text: "OK" }]
+      );
+    }
+  };
+  
+  const toggleTheme = () => {
+    setTheme(isDark ? 'light' : 'dark');
+  };
+
   // Function to render the delete action
   const renderRightActions = (taskId: string) => {
     return (
@@ -665,6 +1216,47 @@ export default function TasksScreen() {
         </Pressable>
       </View>
     );
+  };
+
+  // Add these functions to handle time picker
+  const showTimePicker = () => {
+    console.log('[ModalTimePicker] Opening time picker');
+    setTimePickerVisibility(true);
+  };
+  
+  const hideTimePicker = () => {
+    setTimePickerVisibility(false);
+  };
+
+  const handleConfirmTime = (time: Date) => {
+    console.log('[ModalTimePicker] Confirmed time:', time.toISOString());
+    // Combine with selected date or today
+    const baseDate = selectedDate ? new Date(selectedDate) : new Date();
+    baseDate.setHours(time.getHours());
+    baseDate.setMinutes(time.getMinutes());
+    baseDate.setSeconds(0, 0);
+    setSelectedTime(baseDate); // Set the combined date+time
+    hideTimePicker();
+  };
+
+  const showDatePicker = () => {
+    console.log('[ModalDatePicker] Opening date picker');
+    const initialDate = selectedDate || new Date();
+    console.log('[ModalDatePicker] Setting initial picker date to:', initialDate.toISOString());
+    setInitialPickerDate(initialDate); // Set the initial date for the modal
+    setDatePickerVisibility(true);
+  };
+
+  const hideDatePicker = () => {
+    setDatePickerVisibility(false);
+  };
+
+  const handleConfirmDate = (date: Date) => {
+    console.log('[ModalDatePicker] Confirmed date:', date.toISOString());
+    const dateOnly = new Date(date);
+    dateOnly.setHours(0, 0, 0, 0); // Keep only the date part
+    setSelectedDate(dateOnly);
+    hideDatePicker();
   };
 
   if (!storage) return null;
@@ -736,7 +1328,7 @@ export default function TasksScreen() {
             alwaysBounceVertical={true}
       >
         <View style={styles.header}>
-          <Text style={[styles.title, { color: isDark ? '#FFFFFF' : '#000000' }]}>StreakTracker</Text>
+          <Text style={[styles.title, { color: isDark ? '#FFFFFF' : '#000000' }]}>Focus Notes</Text>
           <View style={styles.headerButtons}>
             <Pressable style={[styles.themeButton, { backgroundColor: isDark ? '#1A1A1A' : '#E2E8F0' }]} onPress={toggleTheme}>
               <Text style={styles.themeButtonText}>{isDark ? '☀️' : '🌙'}</Text>
@@ -930,6 +1522,39 @@ export default function TasksScreen() {
                     </View>
                   </View>
                   
+                  {/* Add Date & Time Selection */}
+                  <View style={styles.dateTimeSection}>
+                    <Text style={[styles.detailsSectionLabel, { color: isDark ? '#FFFFFF' : '#000000' }]}>
+                      When:
+                    </Text>
+                    <View style={styles.dateTimeButtons}>
+                      <Pressable 
+                        style={[styles.dateTimeButton, { 
+                          backgroundColor: isDark ? '#333333' : '#E2E8F0',
+                        }]}
+                        onPress={showDatePicker}
+                      >
+                        <Text style={{ color: isDark ? '#FFFFFF' : '#000000' }}>
+                          {selectedDate ? selectedDate.toLocaleDateString() : "Select Date"}
+                        </Text>
+                      </Pressable>
+                      
+                      <Pressable 
+                        style={[styles.dateTimeButton, { 
+                          backgroundColor: isDark ? '#333333' : '#E2E8F0',
+                        }]}
+                        onPress={showTimePicker}
+                      >
+                        <Text style={{ color: isDark ? '#FFFFFF' : '#000000' }}>
+                          {selectedTime 
+                            ? formatTime(`${selectedTime.getHours().toString().padStart(2, '0')}:${selectedTime.getMinutes().toString().padStart(2, '0')}`)
+                            : "Set Time"
+                          }
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                  
                   <Text style={[styles.detailsSectionLabel, { color: isDark ? '#FFFFFF' : '#000000' }]}>
                     Notes:
                   </Text>
@@ -1009,6 +1634,21 @@ export default function TasksScreen() {
                 </Text>
               </View>
                           
+                          {task.date && (
+                            <View style={[styles.taskDate, { backgroundColor: isDark ? '#2A2A2A' : '#F1F5F9' }]}>
+                              <Text style={[styles.taskMetaText, { color: isDark ? '#666666' : '#64748B' }]}>
+                                📅 {new Date(task.date).toLocaleDateString()}
+                              </Text>
+                            </View>
+                          )}
+                          {task.time && (
+                            <View style={[styles.taskTime, { backgroundColor: isDark ? '#2A2A2A' : '#F1F5F9' }]}>
+                              <Text style={[styles.taskMetaText, { color: isDark ? '#666666' : '#64748B' }]}>
+                                🕒 {formatTime(task.time)}
+                              </Text>
+                            </View>
+                          )}
+                          
                           {task.notes ? (
                             <View style={[styles.notesIndicator, { backgroundColor: isDark ? '#2A2A2A' : '#F1F5F9' }]}>
                               <Text style={[styles.notesIndicatorText, { color: isDark ? '#666666' : '#64748B' }]}>
@@ -1029,8 +1669,13 @@ export default function TasksScreen() {
                       
                       {!task.pomodoroActive ? (
                         <Pressable 
-                          style={[styles.pomodoroButton, { backgroundColor: isDark ? '#2A2A2A' : '#F1F5F9' }]}
+                          style={[
+                            styles.pomodoroButton, 
+                            { backgroundColor: isDark ? '#2A2A2A' : '#F1F5F9' },
+                            storage?.tasks.some(t => t.pomodoroActive && t.id !== task.id) && { opacity: 0.5 }
+                          ]}
                           onPress={() => startPomodoro(task.id)}
+                          disabled={storage?.tasks.some(t => t.pomodoroActive && t.id !== task.id)}
                         >
                           <Text style={[styles.pomodoroButtonText, { color: isDark ? '#FFFFFF' : '#000000' }]}>
                             🍅
@@ -1048,6 +1693,9 @@ export default function TasksScreen() {
                           </Pressable>
                           <Text style={[styles.timerText, { color: isDark ? '#FFFFFF' : '#000000' }]}>
                             {pomodoroTimers[task.id] || '25:00'}
+                          </Text>
+                          <Text style={[styles.timerNote, { color: isDark ? '#999999' : '#666666', fontSize: 10 }]}>
+                            Complete full time for XP
                           </Text>
                         </View>
                       )}
@@ -1100,6 +1748,23 @@ export default function TasksScreen() {
                     </Text>
                   </View>
                   
+                  {selectedTask?.date && (
+                    <View style={[styles.taskDetailItem, { borderBottomColor: isDark ? '#333333' : '#E2E8F0' }]}>
+                      <Text style={[styles.taskDetailLabel, { color: isDark ? '#94A3B8' : '#64748B' }]}>Date:</Text>
+                      <Text style={[styles.taskDetailValue, { color: isDark ? '#FFFFFF' : '#000000' }]}>
+                        {new Date(selectedTask.date).toLocaleDateString()}
+                      </Text>
+                    </View>
+                  )}
+                  {selectedTask?.time && (
+                    <View style={[styles.taskDetailItem, { borderBottomColor: isDark ? '#333333' : '#E2E8F0' }]}>
+                      <Text style={[styles.taskDetailLabel, { color: isDark ? '#94A3B8' : '#64748B' }]}>Time:</Text>
+                      <Text style={[styles.taskDetailValue, { color: isDark ? '#FFFFFF' : '#000000' }]}>
+                        {formatTime(selectedTask.time)}
+                      </Text>
+                    </View>
+                  )}
+                  
                   <Text style={[styles.taskDetailLabel, { color: isDark ? '#94A3B8' : '#64748B', marginTop: 16 }]}>
                     Notes:
                   </Text>
@@ -1140,6 +1805,25 @@ export default function TasksScreen() {
                 </View>
               </View>
             </Modal>
+
+            {/* Add Date Picker Modal */}
+            <DateTimePickerModal
+              isVisible={isDatePickerVisible}
+              mode="date"
+              onConfirm={handleConfirmDate}
+              onCancel={hideDatePicker}
+              date={initialPickerDate}
+            />
+            
+            {/* Add Time Picker Modal */}
+            <DateTimePickerModal
+              isVisible={isTimePickerVisible}
+              mode="time"
+              onConfirm={handleConfirmTime}
+              onCancel={hideTimePicker}
+              date={selectedTime || initialPickerDate}
+              is24Hour={false}
+            />
       </ScrollView>
     </SafeAreaView>
       </KeyboardAvoidingView>
@@ -1527,6 +2211,12 @@ const styles = StyleSheet.create({
     marginTop: 4,
     textAlign: 'center',
   },
+  timerNote: {
+    fontSize: 10,
+    color: '#999999',
+    marginTop: 4,
+    textAlign: 'center',
+  },
   emptyState: {
     flex: 1,
     justifyContent: 'center',
@@ -1554,5 +2244,35 @@ const styles = StyleSheet.create({
   },
   extraScrollSpace: {
     height: 30,
+  },
+  dateTimeSection: {
+    marginBottom: 16,
+  },
+  dateTimeButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginTop: 8,
+  },
+  dateTimeButton: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 44,
+  },
+  taskMetaText: {
+    fontSize: 12,
+  },
+  taskDate: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  taskTime: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
 });

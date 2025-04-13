@@ -1,28 +1,24 @@
-import { Tabs } from 'expo-router/tabs';
+import React from 'react';
+import { Tabs } from 'expo-router';
 import { Text } from 'react-native';
 import { useTheme } from '../../context/ThemeContext';
 
 export default function TabsLayout() {
   const { isDark } = useTheme();
-  
+
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarHideOnKeyboard: true,
         tabBarStyle: {
-          backgroundColor: isDark ? '#000000' : '#FFFFFF',
-          borderTopColor: isDark ? '#1A1A1A' : '#E2E8F0',
+          backgroundColor: isDark ? '#1A1A1A' : '#FFFFFF',
+          borderTopColor: isDark ? '#2A2A2A' : '#E2E8F0',
           height: 60,
-          paddingBottom: 0,
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: -2 },
-          shadowOpacity: 0.1,
-          shadowRadius: 2,
-          elevation: 5,
+          paddingBottom: 5,
         },
         tabBarActiveTintColor: '#FF6B00',
-        tabBarInactiveTintColor: '#94A3B8',
+        tabBarInactiveTintColor: isDark ? '#888888' : '#94A3B8',
         tabBarLabelStyle: {
           fontSize: 12,
         },
@@ -55,6 +51,15 @@ export default function TabsLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: 'Settings',
+          tabBarIcon: ({ color }) => (
+            <Text style={{ color, fontSize: 20 }}>⚙️</Text>
+          ),
+        }}
+      />
     </Tabs>
   );
-} 
+}

@@ -1,14 +1,45 @@
-import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, TextInput, Pressable, ScrollView, Modal, TouchableOpacity } from 'react-native';
+import { useEffect, useState, useCallback } from 'react';
+import { StyleSheet, Text, View, TextInput, Pressable, ScrollView, Modal, TouchableOpacity, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Storage, Task } from '../../types/storage';
 import { 
   getStorageData, 
   setStorageData, 
   checkAndUpdateBadges, 
-  getDefaultStorage 
+  getDefaultStorage,
+  calculateLevel
 } from '../../utils/storage';
 import { useTheme } from '../../context/ThemeContext';
+import { useFocusEffect } from 'expo-router';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { scheduleTaskReminder, cancelNotification, playSound, vibrate } from '../../utils/notifications';
+import uuid from 'uuid';
+
+// Helper function to check if a date is in the future (ignoring time)
+function isFutureDate(date: Date): boolean {
+  // Create new date objects to avoid modifying the originals
+  const today = new Date();
+  const nowDateOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  
+  // Ensure we're working with a proper Date object
+  const compareDate = new Date(date);
+  const compareDateOnly = new Date(compareDate.getFullYear(), compareDate.getMonth(), compareDate.getDate());
+  
+  // Log the comparison for debugging
+  console.log(`[calendar/isFutureDate] Comparing dates - Today: ${nowDateOnly.toISOString().split('T')[0]}, Target: ${compareDateOnly.toISOString().split('T')[0]}`);
+  
+  return compareDateOnly.getTime() > nowDateOnly.getTime();
+}
+
+// Helper function to format time from HH:MM to AM/PM
+function formatTime(timeString: string): string {
+  if (!timeString) return '';
+  const [hours, minutes] = timeString.split(':').map(Number);
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  const formattedHours = hours % 12 || 12; // Convert 0 to 12 for 12 AM/PM
+  const formattedMinutes = minutes.toString().padStart(2, '0');
+  return `${formattedHours}:${formattedMinutes} ${ampm}`;
+}
 
 // Simple calendar implementation
 const Calendar = ({ 
@@ -161,36 +192,59 @@ export default function CalendarScreen() {
   const [storage, setStorage] = useState<Storage | null>(null);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [isAddTaskModalVisible, setIsAddTaskModalVisible] = useState(false);
+  const [isEditTaskModalVisible, setIsEditTaskModalVisible] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskEffort, setNewTaskEffort] = useState<Task['effort']>('medium');
   const [newTaskNotes, setNewTaskNotes] = useState('');
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [selectedTime, setSelectedTime] = useState<Date | null>(null);
+  const [editDate, setEditDate] = useState<Date>(new Date());
+  const [activeModal, setActiveModal] = useState<'add' | 'edit' | null>(null);
   const { isDark } = useTheme();
   
+  // Initial data load
   useEffect(() => {
     loadData();
   }, []);
   
+  // Reload data when the screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      console.log('[Calendar] Tab focused, reloading data');
+      loadData();
+      return () => {}; // cleanup function
+    }, [])
+  );
+  
   async function loadData() {
-    const data = await getStorageData();
-    
-    // Ensure all tasks have a date property
-    let needsUpdate = false;
-    const todayISOString = new Date().toISOString();
-    
-    data.tasks = data.tasks.map(task => {
-      if (!task.date) {
-        needsUpdate = true;
-        return { ...task, date: todayISOString };
+    console.log('[Calendar] Loading data');
+    try {
+      const data = await getStorageData();
+      
+      // Ensure all tasks have a date property
+      let needsUpdate = false;
+      const todayISOString = new Date().toISOString();
+      
+      data.tasks = data.tasks.map(task => {
+        if (!task.date) {
+          needsUpdate = true;
+          return { ...task, date: todayISOString };
+        }
+        return task;
+      });
+      
+      // Save updated tasks if needed
+      if (needsUpdate) {
+        await setStorageData(data);
       }
-      return task;
-    });
-    
-    // Save updated tasks if needed
-    if (needsUpdate) {
-      await setStorageData(data);
+      
+      setStorage(data);
+      console.log(`[Calendar] Data loaded successfully with ${data.tasks.length} tasks`);
+    } catch (error) {
+      console.error('[Calendar] Error loading data:', error);
     }
-    
-    setStorage(data);
   }
   
   // Helper function to normalize dates for comparison
@@ -209,24 +263,36 @@ export default function CalendarScreen() {
   
   // Add a task for the selected date
   const handleAddTask = async () => {
-    if (!storage || !newTaskTitle.trim()) return;
+    if (!newTaskTitle.trim()) {
+      Alert.alert('Task Title Required', 'Please enter a title for your task.');
+      return;
+    }
+
+    const now = new Date();
+    const taskDate = new Date(selectedDate); 
+    if (selectedTime) {
+      const [hours, minutes] = selectedTime.split(':').map(Number);
+      taskDate.setHours(hours, minutes, 0, 0);
+    }
+
+    // Check if this is a future-dated task (compare dates without time)
+    const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const taskDateOnly = new Date(taskDate.getFullYear(), taskDate.getMonth(), taskDate.getDate()).getTime();
+    const isFutureTask = taskDateOnly > nowDateOnly;
     
+    console.log(`[calendar/handleAddTask] Creating task for date: ${taskDate.toISOString()}`);
+    console.log(`[calendar/handleAddTask] Is future task: ${isFutureTask}`);
+
     const newTask: Task = {
-      id: Date.now().toString(),
-      title: newTaskTitle.trim(),
+      id: uuid.v4(),
+      title: newTaskTitle,
       notes: newTaskNotes,
       completed: false,
       effort: newTaskEffort,
-      pomodoroCount: 0,
-      pomodoroActive: false,
-      pomodoroEndTime: null,
-      date: selectedDate.toISOString(),
+      date: taskDate.toISOString(),
+      time: selectedTime,
+      notificationTime: selectedTime,
     };
-    
-    // Check if this is a future task (for the Planner badge)
-    const now = new Date();
-    const taskDate = new Date(selectedDate);
-    const isFutureTask = taskDate.setHours(0,0,0,0) > now.setHours(0,0,0,0);
     
     // Update the stats
     let updatedStats = { ...storage.stats };
@@ -242,6 +308,7 @@ export default function CalendarScreen() {
       }
     }
     
+    // Save the task first without notification ID
     const newStorage = {
       ...storage,
       tasks: [...storage.tasks, newTask],
@@ -250,9 +317,48 @@ export default function CalendarScreen() {
     
     await setStorageData(newStorage);
     setStorage(newStorage);
-    setNewTaskTitle('');
-    setNewTaskNotes('');
-    setNewTaskEffort('medium');
+    
+    // Only schedule a reminder if this is a future task
+    if (isFutureTask) {
+      try {
+        console.log(`[calendar/handleAddTask] Scheduling notification for future task: ${newTask.id}`);
+        
+        // Wait a little bit before scheduling the notification (helps avoid immediate notifications)
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Schedule the notification with the suppressImmediateSound flag
+        const notificationId = await scheduleTaskReminder(newTask);
+        
+        if (notificationId) {
+          console.log(`[calendar/handleAddTask] Future task notification scheduled with ID: ${notificationId}`);
+          
+          // Update the task with the notification ID
+          const updatedTasks = newStorage.tasks.map(t => 
+            t.id === newTask.id 
+              ? { ...t, notificationId } 
+              : t
+          );
+          
+          const updatedStorage = {
+            ...newStorage,
+            tasks: updatedTasks
+          };
+          
+          await setStorageData(updatedStorage);
+          setStorage(updatedStorage);
+          console.log(`[calendar/handleAddTask] Successfully updated task with notification ID`);
+        } else {
+          console.log(`[calendar/handleAddTask] No notification ID returned (might have been skipped)`);
+        }
+      } catch (error) {
+        console.error('[calendar/handleAddTask] Error scheduling notification:', error);
+        // Continue without notification
+      }
+    } else {
+      console.log(`[calendar/handleAddTask] Task is not a future task, not scheduling notification`);
+    }
+    
+    resetTaskForm();
     setIsAddTaskModalVisible(false);
   };
   
@@ -263,13 +369,118 @@ export default function CalendarScreen() {
     const task = storage.tasks.find(t => t.id === id);
     if (!task) return;
     
+    // Toggle the task's completed state
+    const isCompleting = !task.completed;
+    
+    // Play sound when completing a task
+    if (isCompleting) {
+      try {
+        await playSound('task-complete');
+        await vibrate();
+      } catch (error) {
+        console.error("Error with sound or vibration:", error);
+      }
+    }
+    
+    // If completing the task, cancel any scheduled notifications
+    if (isCompleting && task.notificationId) {
+      await cancelNotification(task.notificationId);
+    }
+    
     const newTasks = storage.tasks.map(t =>
-      t.id === id ? { ...t, completed: !t.completed } : t
+      t.id === id ? { 
+        ...t, 
+        completed: !t.completed,
+        notificationId: isCompleting ? undefined : t.notificationId
+      } : t
     );
+    
+    // Calculate XP for completed tasks - same as in the main tasks screen
+    let newXp = storage.stats.xp;
+    // Update task completion counters
+    let tasksCompleted = storage.stats.tasksCompleted;
+    let hardTasksCompleted = storage.stats.hardTasksCompleted;
+    let dailyTasksCompleted = storage.stats.dailyTasksCompleted;
+    
+    if (isCompleting) { // Task is being completed
+      tasksCompleted++;
+      dailyTasksCompleted++; // Increment daily tasks completed counter
+      
+      if (task.effort === 'hard') {
+        hardTasksCompleted++;
+      }
+      
+      switch (task.effort) {
+        case 'easy':
+          newXp += 5;
+          break;
+        case 'medium':
+          newXp += 10;
+          break;
+        case 'hard':
+          newXp += 15;
+          break;
+      }
+    } else { // Task is being uncompleted
+      tasksCompleted = Math.max(0, tasksCompleted - 1);
+      dailyTasksCompleted = Math.max(0, dailyTasksCompleted - 1); // Decrement daily tasks
+      
+      if (task.effort === 'hard') {
+        hardTasksCompleted = Math.max(0, hardTasksCompleted - 1);
+      }
+      
+      switch (task.effort) {
+        case 'easy':
+          newXp -= 5;
+          break;
+        case 'medium':
+          newXp -= 10;
+          break;
+        case 'hard':
+          newXp -= 15;
+          break;
+      }
+    }
+
+    const newLevel = calculateLevel(newXp);
+
+    const newStats = {
+      ...storage.stats,
+      xp: newXp,
+      level: newLevel,
+      tasksCompleted,
+      hardTasksCompleted,
+      dailyTasksCompleted,
+    };
+    
+    // Check for Daily Five badge - completed 5 tasks in a single day
+    let updatedStats = newStats;
+    if (dailyTasksCompleted >= 5 && !storage.stats.badges.find(b => b.id === 'daily-five')?.earned) {
+      updatedStats = {
+        ...newStats,
+        badges: [
+          ...newStats.badges,
+          {
+            id: 'daily-five',
+            title: 'Daily Five',
+            description: 'Complete 5 tasks in a single day',
+            emoji: '✋',
+            earned: true,
+            earnedAt: new Date().toISOString(),
+          }
+        ]
+      };
+    }
+
+    // Check and award badges if that function is available
+    if (typeof checkAndUpdateBadges === 'function') {
+      updatedStats = await checkAndUpdateBadges(updatedStats);
+    }
     
     const newStorage = {
       ...storage,
       tasks: newTasks,
+      stats: updatedStats,
     };
     
     await setStorageData(newStorage);
@@ -301,6 +512,184 @@ export default function CalendarScreen() {
     return date.toLocaleDateString(undefined, options);
   };
   
+  // Handle time picker
+  const handleTimeChange = (event: any, time?: Date) => {
+    setShowTimePicker(false);
+    if (time) {
+      setSelectedTime(time);
+    }
+  };
+  
+  const openTimePicker = () => {
+    setShowTimePicker(true);
+  };
+  
+  // Handle date picker
+  const handleDateChange = (event: any, date?: Date) => {
+    setShowDatePicker(false);
+    if (date) {
+      // Update the correct date based on which modal is active
+      if (activeModal === 'add') {
+        setSelectedDate(date);
+      } else if (activeModal === 'edit') {
+        setEditDate(date);
+      }
+    }
+  };
+  
+  // Open the Add Task Modal
+  const openAddTaskModal = () => {
+    setActiveModal('add');
+    setIsAddTaskModalVisible(true);
+  };
+  
+  // Open the date picker with the correct active modal set
+  const openDatePicker = (modal: 'add' | 'edit') => {
+    setActiveModal(modal);
+    setShowDatePicker(true);
+  };
+  
+  // Handle opening the edit modal
+  const handleEditTask = (task: Task) => {
+    setEditingTask(task);
+    setNewTaskTitle(task.title);
+    setNewTaskNotes(task.notes || '');
+    setNewTaskEffort(task.effort);
+    
+    // Set the edit date
+    if (task.date) {
+      setEditDate(new Date(task.date));
+    } else {
+      setEditDate(new Date());
+    }
+    
+    // Set the time if it exists
+    if (task.time) {
+      const [hours, minutes] = task.time.split(':').map(Number);
+      const timeDate = new Date();
+      timeDate.setHours(hours, minutes, 0, 0);
+      setSelectedTime(timeDate);
+    } else {
+      setSelectedTime(null);
+    }
+    
+    setActiveModal('edit');
+    setIsEditTaskModalVisible(true);
+  };
+  
+  // Save the edited task
+  const saveEditedTask = async () => {
+    if (!storage || !editingTask) return;
+    
+    if (!newTaskTitle.trim()) {
+      Alert.alert('Task Title Required', 'Please enter a title for your task.');
+      return;
+    }
+    
+    // Format time for storage
+    let timeString = null;
+    if (selectedTime) {
+      const hours = selectedTime.getHours().toString().padStart(2, '0');
+      const minutes = selectedTime.getMinutes().toString().padStart(2, '0');
+      timeString = `${hours}:${minutes}`;
+    }
+    
+    // Set time on edit date if provided
+    const taskDate = new Date(editDate);
+    if (selectedTime) {
+      taskDate.setHours(selectedTime.getHours(), selectedTime.getMinutes(), 0, 0);
+    }
+    
+    // Check if date changed and if we need to schedule a new notification
+    const dateChanged = editingTask.date !== taskDate.toISOString();
+    const timeChanged = editingTask.time !== timeString;
+    const needsNewNotification = dateChanged || timeChanged;
+    
+    // Cancel existing notification if date or time changed
+    if (needsNewNotification && editingTask.notificationId) {
+      await cancelNotification(editingTask.notificationId);
+    }
+    
+    // Create updated task object
+    const updatedTask: Task = {
+      ...editingTask,
+      title: newTaskTitle,
+      notes: newTaskNotes,
+      effort: newTaskEffort,
+      date: taskDate.toISOString(),
+      time: timeString,
+      notificationTime: timeString,
+      // Clear notification ID if we need to reschedule
+      notificationId: needsNewNotification ? undefined : editingTask.notificationId
+    };
+    
+    // Update tasks array
+    const newTasks = storage.tasks.map(t => 
+      t.id === editingTask.id ? updatedTask : t
+    );
+    
+    // Save updated tasks
+    const newStorage = {
+      ...storage,
+      tasks: newTasks,
+    };
+    
+    await setStorageData(newStorage);
+    setStorage(newStorage);
+    
+    // Schedule a new notification if needed
+    if (needsNewNotification) {
+      // Check if this is a future-dated task
+      const now = new Date();
+      const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const taskDateOnly = new Date(taskDate.getFullYear(), taskDate.getMonth(), taskDate.getDate()).getTime();
+      const isFutureTask = taskDateOnly > nowDateOnly || 
+                          (taskDateOnly === nowDateOnly && timeString && 
+                           `${now.getHours()}:${now.getMinutes()}` < timeString);
+      
+      if (isFutureTask) {
+        try {
+          // Schedule the notification
+          const notificationId = await scheduleTaskReminder(updatedTask);
+          
+          if (notificationId) {
+            // Update the task with the notification ID
+            const updatedTasks = newTasks.map(t => 
+              t.id === updatedTask.id 
+                ? { ...t, notificationId } 
+                : t
+            );
+            
+            const updatedStorage = {
+              ...newStorage,
+              tasks: updatedTasks
+            };
+            
+            await setStorageData(updatedStorage);
+            setStorage(updatedStorage);
+          }
+        } catch (error) {
+          console.error('Error scheduling notification:', error);
+          // Continue without notification
+        }
+      }
+    }
+    
+    // Reset and close modal
+    setEditingTask(null);
+    resetTaskForm();
+    setIsEditTaskModalVisible(false);
+  };
+  
+  // Reset formatting when resetting the form
+  const resetTaskForm = () => {
+    setNewTaskTitle('');
+    setNewTaskNotes('');
+    setNewTaskEffort('medium');
+    setSelectedTime(null);
+    setEditDate(new Date());
+  };
+  
   if (!storage) return null;
   
   return (
@@ -323,7 +712,7 @@ export default function CalendarScreen() {
           </Text>
           <TouchableOpacity 
             style={[styles.addButton, { backgroundColor: isDark ? '#333333' : '#E2E8F0' }]}
-            onPress={() => setIsAddTaskModalVisible(true)}
+            onPress={openAddTaskModal}
           >
             <Text style={[styles.addButtonText, { color: isDark ? '#FFFFFF' : '#000000' }]}>Add Task</Text>
           </TouchableOpacity>
@@ -368,18 +757,35 @@ export default function CalendarScreen() {
                       {task.notes}
                     </Text>
                   ) : null}
-                  <View style={[styles.taskEffort, { backgroundColor: isDark ? '#2A2A2A' : '#F1F5F9' }]}>
-                    <Text style={[styles.taskEffortText, { color: isDark ? '#94A3B8' : '#64748B' }]}>
-                      {task.effort} ({task.effort === 'easy' ? '5' : task.effort === 'medium' ? '10' : '15'} XP)
-                    </Text>
+                  <View style={styles.taskMeta}>
+                    <View style={[styles.taskEffort, { backgroundColor: isDark ? '#2A2A2A' : '#F1F5F9' }]}>
+                      <Text style={[styles.taskEffortText, { color: isDark ? '#94A3B8' : '#64748B' }]}>
+                        {task.effort} ({task.effort === 'easy' ? '5' : task.effort === 'medium' ? '10' : '15'} XP)
+                      </Text>
+                    </View>
+                    {task.time && (
+                      <View style={[styles.taskTime, { backgroundColor: isDark ? '#2A2A2A' : '#F1F5F9' }]}>
+                        <Text style={[styles.taskTimeText, { color: isDark ? '#94A3B8' : '#64748B' }]}>
+                          🕒 {formatTime(task.time)}
+                        </Text>
+                      </View>
+                    )}
                   </View>
                 </View>
+                <View style={styles.taskActions}>
                 <TouchableOpacity
-                  style={styles.deleteButton}
+                    style={styles.actionButton}
+                    onPress={() => handleEditTask(task)}
+                  >
+                    <Text style={styles.actionButtonText}>✏️</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.actionButton}
                   onPress={() => handleDeleteTask(task.id)}
                 >
-                  <Text style={styles.deleteButtonText}>🗑️</Text>
+                    <Text style={styles.actionButtonText}>🗑️</Text>
                 </TouchableOpacity>
+                </View>
               </View>
             ))}
           </View>
@@ -468,6 +874,34 @@ export default function CalendarScreen() {
               </TouchableOpacity>
             </View>
             
+            <View style={styles.dateTimeContainer}>
+              <View style={styles.dateTimeColumn}>
+                <Text style={[styles.sectionLabel, { color: isDark ? '#FFFFFF' : '#000000' }]}>Date:</Text>
+                <TouchableOpacity 
+                  style={[styles.timeButton, { backgroundColor: isDark ? '#333333' : '#E2E8F0' }]}
+                  onPress={() => openDatePicker('add')}
+                >
+                  <Text style={{ color: isDark ? '#FFFFFF' : '#000000' }}>
+                    {selectedDate ? selectedDate.toDateString() : "Select Date"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              
+              <View style={styles.dateTimeColumn}>
+                <Text style={[styles.sectionLabel, { color: isDark ? '#FFFFFF' : '#000000' }]}>Time:</Text>
+            <TouchableOpacity 
+              style={[styles.timeButton, { backgroundColor: isDark ? '#333333' : '#E2E8F0' }]}
+              onPress={openTimePicker}
+            >
+              <Text style={{ color: isDark ? '#FFFFFF' : '#000000' }}>
+                {selectedTime 
+                  ? formatTime(`${selectedTime.getHours().toString().padStart(2, '0')}:${selectedTime.getMinutes().toString().padStart(2, '0')}`) 
+                  : "Set Time (Optional)"}
+              </Text>
+            </TouchableOpacity>
+              </View>
+            </View>
+            
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={[styles.modalButton, { backgroundColor: isDark ? '#333333' : '#E2E8F0' }]}
@@ -492,6 +926,166 @@ export default function CalendarScreen() {
           </View>
         </View>
       </Modal>
+      
+      {/* Edit Task Modal */}
+      <Modal
+        visible={isEditTaskModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setIsEditTaskModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: isDark ? '#1A1A1A' : '#FFFFFF' }]}>
+            <Text style={[styles.modalTitle, { color: isDark ? '#FFFFFF' : '#000000' }]}>
+              Edit Task
+            </Text>
+            
+            <TextInput
+              style={[styles.input, { 
+                backgroundColor: isDark ? '#2A2A2A' : '#F1F5F9',
+                color: isDark ? '#FFFFFF' : '#000000',
+              }]}
+              placeholder="Task title..."
+              placeholderTextColor={isDark ? '#666666' : '#94A3B8'}
+              value={newTaskTitle}
+              onChangeText={setNewTaskTitle}
+            />
+            
+            <TextInput
+              style={[styles.notesInput, { 
+                backgroundColor: isDark ? '#2A2A2A' : '#F1F5F9',
+                color: isDark ? '#FFFFFF' : '#000000',
+              }]}
+              placeholder="Notes (optional)..."
+              placeholderTextColor={isDark ? '#666666' : '#94A3B8'}
+              value={newTaskNotes}
+              onChangeText={setNewTaskNotes}
+              multiline
+            />
+            
+            <Text style={[styles.sectionLabel, { color: isDark ? '#FFFFFF' : '#000000' }]}>Difficulty:</Text>
+            <View style={styles.difficultyButtons}>
+              <TouchableOpacity
+                style={[
+                  styles.difficultyButton,
+                  { backgroundColor: newTaskEffort === 'easy' ? '#10B981' : (isDark ? '#333333' : '#E2E8F0') }
+                ]}
+                onPress={() => setNewTaskEffort('easy')}
+              >
+                <Text style={[
+                  styles.difficultyButtonText, 
+                  { color: newTaskEffort === 'easy' ? '#FFFFFF' : (isDark ? '#FFFFFF' : '#000000') }
+                ]}>
+                  Easy (5 XP)
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.difficultyButton,
+                  { backgroundColor: newTaskEffort === 'medium' ? '#0EA5E9' : (isDark ? '#333333' : '#E2E8F0') }
+                ]}
+                onPress={() => setNewTaskEffort('medium')}
+              >
+                <Text style={[
+                  styles.difficultyButtonText, 
+                  { color: newTaskEffort === 'medium' ? '#FFFFFF' : (isDark ? '#FFFFFF' : '#000000') }
+                ]}>
+                  Medium (10 XP)
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.difficultyButton,
+                  { backgroundColor: newTaskEffort === 'hard' ? '#EF4444' : (isDark ? '#333333' : '#E2E8F0') }
+                ]}
+                onPress={() => setNewTaskEffort('hard')}
+              >
+                <Text style={[
+                  styles.difficultyButtonText, 
+                  { color: newTaskEffort === 'hard' ? '#FFFFFF' : (isDark ? '#FFFFFF' : '#000000') }
+                ]}>
+                  Hard (15 XP)
+                </Text>
+              </TouchableOpacity>
+            </View>
+            
+            <View style={styles.dateTimeContainer}>
+              <View style={styles.dateTimeColumn}>
+                <Text style={[styles.sectionLabel, { color: isDark ? '#FFFFFF' : '#000000' }]}>Date:</Text>
+                <TouchableOpacity 
+                  style={[styles.timeButton, { backgroundColor: isDark ? '#333333' : '#E2E8F0' }]}
+                  onPress={() => openDatePicker('edit')}
+                >
+                  <Text style={{ color: isDark ? '#FFFFFF' : '#000000' }}>
+                    {editDate ? editDate.toDateString() : "Select Date"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              
+              <View style={styles.dateTimeColumn}>
+                <Text style={[styles.sectionLabel, { color: isDark ? '#FFFFFF' : '#000000' }]}>Time:</Text>
+                <TouchableOpacity 
+                  style={[styles.timeButton, { backgroundColor: isDark ? '#333333' : '#E2E8F0' }]}
+                  onPress={openTimePicker}
+                >
+                  <Text style={{ color: isDark ? '#FFFFFF' : '#000000' }}>
+                    {selectedTime 
+                      ? formatTime(`${selectedTime.getHours().toString().padStart(2, '0')}:${selectedTime.getMinutes().toString().padStart(2, '0')}`) 
+                      : "Set Time (Optional)"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.modalButton, { backgroundColor: isDark ? '#333333' : '#E2E8F0' }]}
+                onPress={() => {
+                  setIsEditTaskModalVisible(false);
+                  setEditingTask(null);
+                  resetTaskForm();
+                }}
+              >
+                <Text style={[styles.modalButtonText, { color: isDark ? '#FFFFFF' : '#000000' }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.modalButton, 
+                  { 
+                    backgroundColor: newTaskTitle.trim() ? '#FF6B00' : (isDark ? '#444444' : '#CBD5E1'),
+                    opacity: newTaskTitle.trim() ? 1 : 0.5
+                  }
+                ]}
+                onPress={saveEditedTask}
+                disabled={!newTaskTitle.trim()}
+              >
+                <Text style={[styles.modalButtonText, { color: '#FFFFFF' }]}>Save Changes</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      
+      {/* Date Picker */}
+      {showDatePicker && (
+        <DateTimePicker
+          value={editDate || new Date()}
+          mode="date"
+          display="default"
+          onChange={handleDateChange}
+        />
+      )}
+      
+      {/* Time Picker */}
+      {showTimePicker && (
+        <DateTimePicker
+          value={selectedTime || new Date()}
+          mode="time"
+          is24Hour={false}
+          display="default"
+          onChange={handleTimeChange}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -633,14 +1227,26 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginTop: 4,
   },
+  taskMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+  },
   taskEffort: {
-    alignSelf: 'flex-start',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 4,
-    marginTop: 8,
   },
   taskEffortText: {
+    fontSize: 12,
+  },
+  taskTime: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  taskTimeText: {
     fontSize: 12,
   },
   deleteButton: {
@@ -713,5 +1319,30 @@ const styles = StyleSheet.create({
   modalButtonText: {
     fontSize: 14,
     fontWeight: '600',
+  },
+  timeButton: {
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  taskActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  actionButton: {
+    padding: 8,
+    marginLeft: 4,
+  },
+  actionButtonText: {
+    fontSize: 16,
+  },
+  dateTimeContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 24,
+    gap: 16,
+  },
+  dateTimeColumn: {
+    flex: 1,
   },
 }); 

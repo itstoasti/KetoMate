@@ -1,38 +1,13 @@
-import { Tabs } from 'expo-router/tabs';
-import { ThemeProvider, AppProvider, useTheme } from '../context/ThemeContext';
-import { StatusBar } from 'expo-status-bar';
+import React from 'react';
+import { Slot } from 'expo-router';
+import { ThemeProvider, AppProvider } from '../context/ThemeContext';
 
-export default function Layout() {
+export default function RootLayout() {
   return (
     <AppProvider>
       <ThemeProvider>
-        <RootTabs />
+        <Slot />
       </ThemeProvider>
     </AppProvider>
-  );
-}
-
-function RootTabs() {
-  const { isDark } = useTheme();
-
-  return (
-    <>
-      <StatusBar style={isDark ? 'light' : 'dark'} />
-      <Tabs
-        screenOptions={{
-          headerShown: false,
-          tabBarStyle: {
-            display: 'none',
-          },
-        }}
-      >
-        <Tabs.Screen
-          name="(tabs)"
-          options={{
-            href: null,
-          }}
-        />
-      </Tabs>
-    </>
   );
 }

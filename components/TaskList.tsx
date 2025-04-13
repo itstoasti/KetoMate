@@ -16,6 +16,9 @@ export function TaskList({ tasks, onToggleTask, onStartPomodoro }: TaskListProps
   const { isDark } = useTheme();
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
+  // Check if any task has an active pomodoro timer
+  const anyActivePomodoro = tasks.some(t => t.pomodoroActive);
+
   const toggleExpanded = (id: string) => {
     setExpandedId(expandedId === id ? null : id);
   };
@@ -104,7 +107,7 @@ export function TaskList({ tasks, onToggleTask, onStartPomodoro }: TaskListProps
                     {task.pomodoroActive ? (
                       <Button
                         onPress={() => onStartPomodoro(task.id)}
-                        title="Stop"
+                        title="Stop (No XP)"
                         variant="secondary"
                       />
                     ) : (
@@ -112,7 +115,7 @@ export function TaskList({ tasks, onToggleTask, onStartPomodoro }: TaskListProps
                         onPress={() => onStartPomodoro(task.id)}
                         title="Start Pomodoro"
                         variant="secondary"
-                        disabled={task.completed}
+                        disabled={task.completed || (anyActivePomodoro && !task.pomodoroActive)}
                       />
                     )}
                   </View>
