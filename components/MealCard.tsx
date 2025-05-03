@@ -84,7 +84,7 @@ const MealCard: React.FC<MealCardProps> = ({ meal, onPress }) => {
       </TouchableOpacity>
       
       <View style={styles.header}>
-        <Text style={styles.title} numberOfLines={1}>{getDisplayName(meal.name)}</Text>
+        <Text style={styles.title}>{getDisplayName(meal.name)}</Text>
         <View style={styles.typeContainer}>
           {mealTypeIcons[meal.type]}
           <Text style={styles.type}>{meal.type.charAt(0).toUpperCase() + meal.type.slice(1)}</Text>

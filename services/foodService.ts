@@ -1,5 +1,6 @@
 import { Food, Macro } from '@/types';
 import { analyzeFood } from './aiService'; // Import the AI service
+import { supabase } from '../lib/supabaseClient'; // Re-add supabase import
 // Removed supabase client import as proxy is no longer used
 
 // Type for the NotFound marker
@@ -202,3 +203,130 @@ const parseAIResponseToFood = (originalQuery: string, text: string): Food | NotF
     return null;
   }
 };
+
+// --- Nutrition Label Analysis Service ---
+
+export interface NutritionLabelData {
+  name?: string;
+  servingSize?: string;
+  calories?: number | string; // Allow string initially for easier form setting
+  carbs?: number | string;
+  protein?: number | string;
+  fat?: number | string;
+  error?: string; // To capture errors from the function
+}
+
+// Updated function signature to accept imageBase64
+export const getNutritionFromImageAI = async (imageBase64: string): Promise<NutritionLabelData> => {
+  console.log('[foodService] Getting nutrition details from image Base64 via AI (OpenAI Proxy)...');
+
+  if (!imageBase64) {
+    console.error('[foodService] No image base64 data provided for analysis.');
+    return { error: 'No image base64 data provided.' };
+  }
+
+  const messages = [
+    {
+      role: 'system',
+      content: 'You are an expert nutrition label analyzer. Analyze the provided image and extract the key nutritional facts.'
+    },
+    {
+      role: 'user',
+      content: `Analyze the provided image of a nutrition facts label. Extract the following information accurately. If a value is not clearly present or readable, use "N/A" for strings or 0 for numbers. Respond ONLY with a valid JSON object containing these keys: "name", "servingSize", "calories", "carbs", "protein", "fat". Do not include markdown formatting (\`\`\`) around the JSON. Example: {"name": "Example Product", "servingSize": "1 cup (240g)", "calories": 150, "carbs": 10, "protein": 5, "fat": 8}. If you cannot perform the analysis, return JSON with an error key: {"error": "Could not analyze image"}.`
+    }
+  ];
+
+  try {
+    console.log('[foodService] Calling openai-proxy function via fetch with base64...');
+
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !sessionData.session) {
+      console.error('[foodService] Error fetching session or no active session:', sessionError);
+      return { error: 'User not authenticated' };
+    }
+    const token = sessionData.session.access_token;
+    const apiKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    const functionUrl = `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/openai-proxy`;
+
+    if (!apiKey) {
+      return { error: 'Supabase API Key not configured.' };
+    }
+    if (!functionUrl) {
+      return { error: 'Supabase Function URL not configured.' };
+    }
+
+    // Updated payload to send imageBase64
+    const requestBody = {
+        messages: messages,
+        imageBase64: imageBase64 // Send the Base64 string
+    };
+
+    const response = await fetch(functionUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            'apikey': apiKey
+        },
+        body: JSON.stringify(requestBody)
+    });
+
+    console.log('[foodService] Fetch response status:', response.status);
+
+    if (!response.ok) {
+        const errorBody = await response.json();
+        console.error('[foodService] Fetch error response body:', errorBody);
+        const detail = errorBody.details || errorBody.error || 'Unknown function error';
+        throw new Error(`Function Error: ${detail}`);
+    }
+
+    const responseData = await response.json();
+    console.log('[foodService] Raw AI Response Data:', responseData);
+
+    if (responseData.error) {
+        console.error('[foodService] OpenAI API returned an error:', responseData.error);
+        return { error: `AI Analysis Error: ${responseData.error}` };
+    }
+
+    if (!responseData.choices || responseData.choices.length === 0 || !responseData.choices[0].message || !responseData.choices[0].message.content) {
+      console.error('[foodService] Unexpected OpenAI response format:', responseData);
+      return { error: 'Invalid response format from AI.' };
+    }
+
+    const content = responseData.choices[0].message.content.trim();
+
+    // Attempt to parse the content as JSON
+    try {
+        const nutritionData: NutritionLabelData = JSON.parse(content);
+        console.log('[foodService] Successfully parsed JSON response:', nutritionData);
+
+        if (nutritionData.error) {
+           console.warn('[foodService] AI reported an analysis error:', nutritionData.error);
+           return { error: `AI could not analyze image: ${nutritionData.error}` };
+        }
+
+        // Format data before returning
+        const formattedData: NutritionLabelData = {
+            name: nutritionData.name || 'N/A',
+            servingSize: nutritionData.servingSize || 'N/A',
+            calories: nutritionData.calories !== undefined && nutritionData.calories !== null ? String(nutritionData.calories) : '0',
+            carbs: nutritionData.carbs !== undefined && nutritionData.carbs !== null ? String(nutritionData.carbs) : '0',
+            protein: nutritionData.protein !== undefined && nutritionData.protein !== null ? String(nutritionData.protein) : '0',
+            fat: nutritionData.fat !== undefined && nutritionData.fat !== null ? String(nutritionData.fat) : '0',
+        };
+        return formattedData;
+
+    } catch (parseError) {
+      console.error('[foodService] Failed to parse AI response content as JSON:', content, parseError);
+      return { error: 'Failed to understand AI response.' };
+    }
+
+  } catch (error: any) {
+    console.error('[foodService] Error calling OpenAI proxy function:', error);
+    // Check if error.message already contains the detailed message from the !response.ok block
+    const message = error.message?.includes('Function Error:') ? error.message : `Failed to analyze image: ${error.message}`;
+    return { error: message };
+  }
+};
+
+// --- End Nutrition Label Analysis Service ---

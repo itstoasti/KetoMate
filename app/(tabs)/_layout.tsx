@@ -1,6 +1,6 @@
 import React from 'react';
 import { Tabs } from 'expo-router';
-import { ChartBar as BarChart3, CirclePlus as PlusCircle, Chrome as Home, Bot, User } from 'lucide-react-native';
+import { ChartBar as BarChart3, CirclePlus as PlusCircle, LayoutDashboard, Bot, User } from 'lucide-react-native';
 import { View, StyleSheet, Platform } from 'react-native';
 import { BlurView } from 'expo-blur';
 
@@ -24,7 +24,7 @@ export default function TabLayout() {
         options={{
           title: 'Dashboard',
           tabBarIcon: ({ color, size }) => (
-            <Home size={size} color={color} />
+            <LayoutDashboard size={size} color={color} />
           ),
         }}
       />

@@ -16,7 +16,7 @@ const FoodCard: React.FC<FoodCardProps> = ({ food, onPress }) => {
       activeOpacity={0.7}
     >
       <View style={styles.header}>
-        <Text style={styles.name} numberOfLines={1}>{food.name}</Text>
+        <Text style={styles.name}>{food.name}</Text>
         {food.isKetoFriendly ? (
           <View style={styles.ketoTag}>
             <CheckCircle2 size={16} color="#4CAF50" />

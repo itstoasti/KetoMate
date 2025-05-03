@@ -1,13 +1,18 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { corsHeaders } from "../_shared/cors.ts";
 import OpenAI from "https://deno.land/x/openai@v4.52.7/mod.ts";
+import { ChatCompletionMessageParam } from 'https://deno.land/x/openai@v4.52.7/resources/chat/completions.ts';
+
+console.log(`Function Version: ${new Date().toISOString()}`);
 
 // Ensure you have set the OPENAI_API_KEY secret in your Supabase project secrets
 // supabase secrets set OPENAI_API_KEY <your-key>
 
 serve(async (req: Request) => {
-  // This is needed if you're planning to invoke your function from a browser.
+  console.log("Incoming request...");
+  // Handle CORS preflight request
   if (req.method === "OPTIONS") {
+    console.log("Handling OPTIONS request...");
     return new Response("ok", { headers: corsHeaders });
   }
 
@@ -21,56 +26,110 @@ serve(async (req: Request) => {
     // or globally if it doesn't store request-specific state.
     const openai = new OpenAI({ apiKey });
 
-    // --- IMPORTANT: Adapt this based on your app's request ---
-    // Expecting a JSON body with a 'messages' array or similar.
-    // Adjust 'messages' if your app sends a different structure (e.g., 'prompt').
+    // --- Parse request body --- 
     console.log("Parsing request body...");
-    const { messages } = await req.json();
-    if (!messages) {
-      console.error("Request body missing 'messages' array.");
-      throw new Error("Request body must contain 'messages' array.");
+    
+    // --- DEBUGGING REMOVED ---
+    // console.log("Incoming Headers:", JSON.stringify(Object.fromEntries(req.headers.entries())));
+    // const rawBody = await req.text(); // Read body as text first
+    // console.log("Raw Incoming Body Text:", rawBody);
+    // const body = JSON.parse(rawBody); 
+    // --- END DEBUGGING REMOVED ---
+    
+    const body = await req.json(); // Parse JSON directly
+    const { messages, imageBase64 } = body; // Expect imageBase64 again
+    
+    if (!messages || !Array.isArray(messages)) {
+      console.error("Request body missing or invalid 'messages' array.");
+      throw new Error("Request body must contain a valid 'messages' array.");
     }
-    console.log("Request body parsed successfully.");
-    // --- End of adaptation section ---
+    
+    // Validate imageBase64 if present
+    if (imageBase64 && typeof imageBase64 !== 'string') {
+        console.error("Invalid 'imageBase64' field in request body.");
+        throw new Error("If provided, 'imageBase64' must be a string.");
+    }
+    
+    console.log(`Request body parsed. Image Base64 provided: ${imageBase64 ? 'Yes' : 'No'}`);
+    // --- End of parsing section ---
+
+
+    // --- Construct OpenAI Payload ---
+    let payload: OpenAI.Chat.Completions.ChatCompletionCreateParams;
+    const model = "gpt-4o"; // Specify the model
+
+    if (imageBase64) {
+        console.log("Constructing payload for VISION request.");
+        // Ensure base64 string has the correct prefix for OpenAI API
+        const imageDataUri = imageBase64.startsWith('data:image') 
+                             ? imageBase64 
+                             : `data:image/jpeg;base64,${imageBase64}`;
+
+        // Combine text messages and image message
+        const visionMessages: ChatCompletionMessageParam[] = [
+            ...messages, // Include existing text messages (system, user prompt)
+            {
+                role: 'user',
+                content: [
+                    // { type: "text", text: "Analyze the attached image:" }, // Optional additional text
+                    {
+                        type: "image_url",
+                        image_url: {
+                            url: imageDataUri,
+                        },
+                    },
+                ],
+            },
+        ];
+
+        payload = {
+            model: model,
+            messages: visionMessages,
+            max_tokens: 300, // Adjust as needed
+            temperature: 0.2, // Lower temperature for more deterministic results
+        };
+    } else {
+        console.log("Constructing payload for TEXT request.");
+        payload = {
+            model: model,
+            messages: messages,
+            max_tokens: 200, // Adjust as needed
+            temperature: 0.5, // Can be slightly higher for text
+        };
+    }
+    // --- End of Payload Construction ---
 
 
     // --- Call OpenAI API ---
-    // Adapt the model and other parameters as needed for your use case.
-    console.log("Calling OpenAI API...");
-    const chatCompletion = await openai.chat.completions.create({
-      messages: messages, // Use the messages received from the app
-      model: "gpt-4o", // Or your preferred model
-      // Add any other parameters like max_tokens, temperature, etc.
-    });
+    console.log(`Calling OpenAI API with model: ${model}...`);
+    const chatCompletion = await openai.chat.completions.create(payload);
     console.log("OpenAI API call successful.");
-    // --- End of OpenAI Call ---
+    // console.log("Raw OpenAI response:", JSON.stringify(chatCompletion)); // Keep commented unless deep debugging
 
-    // Extract the content from the first choice
-    console.log("Raw OpenAI response:", JSON.stringify(chatCompletion));
-    const responseData = chatCompletion.choices[0]?.message?.content;
-
-    if (!responseData) {
-        console.error("No response content received from OpenAI.");
-        throw new Error("No response content received from OpenAI.");
+    const responseContent = chatCompletion.choices[0]?.message?.content;
+    if (!responseContent) {
+      throw new Error("OpenAI response did not contain content.");
     }
+    console.log("Extracted response content:", responseContent.substring(0, 100) + "..."); // Log start of content
 
-    console.log("Extracted response content:", responseData);
-
+    // --- Return Response --- 
     console.log("Returning successful response to client...");
     return new Response(
-      JSON.stringify({ response: responseData }), // Send only the content back
+      // Return the full ChatCompletion object so client can parse choices[0].message.content
+      JSON.stringify(chatCompletion),
       {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 200,
       }
     );
+
   } catch (error) {
     console.error("Error occurred:", error);
     return new Response(
-      JSON.stringify({ error: error.message }),
+      JSON.stringify({ error: error.message, details: error.stack }), // Include stack trace in details for debugging
       {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 400, // Or 500 for internal server errors
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 500,
       }
     );
   }

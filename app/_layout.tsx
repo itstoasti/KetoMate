@@ -85,7 +85,7 @@ function RootLayout() {
         <Stack.Screen name="(auth)/login" />
         <Stack.Screen name="+not-found" options={{ title: 'Oops!' }} />
       </Stack>
-      <StatusBar style="auto" />
+      <StatusBar style="dark" />
     </>
   );
 }
