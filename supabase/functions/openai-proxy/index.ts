@@ -94,7 +94,7 @@ serve(async (req: Request) => {
             model: model,
             messages: messages,
             max_tokens: 200, // Adjust as needed
-            temperature: 0.5, // Can be slightly higher for text
+            temperature: 0, // Can be slightly higher for text - CHANGED to 0 for determinism
         };
     }
     // --- End of Payload Construction ---

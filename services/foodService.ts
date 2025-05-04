@@ -3,14 +3,35 @@ import { analyzeFood } from './aiService'; // Import the AI service
 import { supabase } from '../lib/supabaseClient'; // Re-add supabase import
 // Removed supabase client import as proxy is no longer used
 
+// Type definition for Keto Rating
+type KetoRating = 'Keto-Friendly' | 'Limit' | 'Strictly Limit' | 'Avoid';
+
 // Type for the NotFound marker
 export type NotFoundMarker = { status: 'not_found'; query: string };
 
 // Helper function for keto check (keep for parsed results)
 const isKetoFriendly = (macros: Macro): boolean => {
   // Simplified check: Primarily focus on low carbs (e.g., <= 7g)
+  // Note: This should ideally use NET CARBS if available
+  // We handle this in TrackScreen by setting the `carbs` field
+  // in the form/saved data to be net carbs.
   return macros.carbs >= 0 && macros.carbs <= 7;
 };
+
+// --- Moved from AppContext --- 
+// Helper function to determine keto rating based on net carbs
+// Export the function so it can be used elsewhere (e.g., TrackScreen)
+export const getKetoRating = (netCarbs: number | null): KetoRating => {
+  if (netCarbs === null || netCarbs < 0) {
+    console.warn(`[getKetoRating] Invalid or null netCarbs (${netCarbs}), defaulting rating.`);
+    return 'Limit'; // Default for missing/invalid data
+  }
+  if (netCarbs <= 6) return 'Keto-Friendly'; // Green
+  if (netCarbs <= 10) return 'Limit'; // Yellow
+  if (netCarbs <= 20) return 'Strictly Limit'; // Red
+  return 'Avoid'; // Red (> 20)
+};
+// --- End Moved Function --- 
 
 // --- Removed searchFoodByName and getFoodByBarcode functions --- 
 
@@ -24,7 +45,7 @@ export const mockFoodSearch = (query: string): Food[] => {
       servingSize: '1 medium (150g)',
       macros: { carbs: 2, protein: 2, fat: 15, calories: 160 },
       dateAdded: new Date().toISOString(),
-      isKetoFriendly: true
+      ketoRating: 'Keto-Friendly' // Net carbs = 2
     },
     {
       id: '2',
@@ -33,7 +54,7 @@ export const mockFoodSearch = (query: string): Food[] => {
       servingSize: '2 slices (20g)',
       macros: { carbs: 0, protein: 6, fat: 8, calories: 90 },
       dateAdded: new Date().toISOString(),
-      isKetoFriendly: true
+      ketoRating: 'Keto-Friendly' // Net carbs = 0
     },
     {
       id: '3',
@@ -42,7 +63,7 @@ export const mockFoodSearch = (query: string): Food[] => {
       servingSize: '1 slice (30g)',
       macros: { carbs: 15, protein: 3, fat: 1, calories: 80 },
       dateAdded: new Date().toISOString(),
-      isKetoFriendly: false
+      ketoRating: 'Strictly Limit' // Net carbs = 15
     }
   ];
 
@@ -52,16 +73,34 @@ export const mockFoodSearch = (query: string): Food[] => {
   );
 };
 
+// Function to check if a query looks like a barcode
+const looksLikeBarcode = (query: string): boolean => {
+  // Simple check: all digits and typical length (e.g., 8-14 digits)
+  return /^\d{8,14}$/.test(query.trim());
+};
+
 // Function return type updated to include NotFoundMarker
 export const getFoodDetailsFromAI = async (query: string): Promise<Food | NotFoundMarker | null> => {
   console.log('[foodService] Getting food details from AI for:', query);
+  const isBarcodeQuery = looksLikeBarcode(query);
+  console.log(`[foodService] Query "${query}" looks like barcode: ${isBarcodeQuery}`);
 
-  // Enhanced Prompt v4 - Status key
-  const prompt = `
+  // Construct the messages array directly here
+  // Use any[] type as ChatCompletionMessageParam is not directly available
+  let messages: any[];
+
+  if (isBarcodeQuery) {
+    messages = [
+      {
+        role: 'system',
+        content: 'You are an accurate barcode lookup assistant. Respond only in the specified key-value format.'
+      },
+      {
+        role: 'user',
+        content: `
 Analyze the following food query: "${query}"
 
-If the query is a barcode, look up the product *accurately*.
-If it's a food name, provide typical nutritional information.
+This is a barcode. Look up the specific product *accurately*.
 
 **Accuracy is critical.** Respond with a status line first, then the details.
 If you cannot confidently identify the *exact* product for the given barcode, set Status to NotFound.
@@ -69,83 +108,129 @@ If you cannot confidently identify the *exact* product for the given barcode, se
 **Output Format:** Respond *only* with the following key-value pairs on separate lines. Do not add any extra explanation or commentary.
 
 Status: [Found | NotFound]
-Name: [Product Name or Unknown Barcode ...]
+Name: [Product Name or Unknown Barcode ${query}]
 Serving Size: [Serving Size or N/A]
 Calories: [Number or 0]
-Carbs: [Number or 0]
+Total Carbs: [Number or 0] 
+Fiber: [Number or 0]
+Sugar Alcohols: [Number or 0] 
+Net Carbs: [Number or 0]
 Protein: [Number or 0]
 Fat: [Number or 0]
 
-Example for "1 large egg":
-Status: Found
-Name: Large Egg
-Serving Size: 1 large (50g)
-Calories: 72
-Carbs: 0.4
-Protein: 6
-Fat: 5
-
-Example for barcode 123456789 (if found):
+Example (if found):
 Status: Found
 Name: Specific Product Name
 Serving Size: 1 bar (45g)
 Calories: 200
-Carbs: 20
+Total Carbs: 20
+Fiber: 5
+Sugar Alcohols: 10
+Net Carbs: 5 
 Protein: 5
 Fat: 10
 
-Example for barcode 987654321 (if NOT found or unsure):
+Example (if NOT found or unsure):
 Status: NotFound
-Name: Unknown Barcode 987654321
+Name: Unknown Barcode ${query}
 Serving Size: N/A
 Calories: 0
-Carbs: 0
+Total Carbs: 0
+Fiber: 0
+Sugar Alcohols: 0
+Net Carbs: 0
 Protein: 0
 Fat: 0
-  `;
+        `
+      }
+    ];
+  } else {
+    // General Term Query Prompt (REFINED for accuracy and net carbs)
+    messages = [
+       {
+        role: 'system',
+        // Refined System Prompt
+        content: 'You are an accurate nutrition database assistant. Prioritize factual accuracy for the requested food item. Calculate net carbs (Total Carbs - Fiber - Sugar Alcohols). Respond only in the specified key-value format.'
+      },
+      {
+          role: 'user',
+          // Refined User Prompt v2
+          content: `
+Analyze the specific food item: "${query}"
+
+Provide the most accurate nutritional information you can find for a common serving size. 
+
+**CRITICAL ACCURACY REQUIRED FOR ALL VALUES.**
+
+Calculate Net Carbs using the formula: Net Carbs = Total Carbohydrates - Dietary Fiber - Sugar Alcohols. 
+If Fiber or Sugar Alcohols values are not found or are zero for this item, treat them as 0 in the calculation. Ensure the final Net Carbs value is correct based on the values you provide for Total Carbs, Fiber, and Sugar Alcohols.
+
+**Output Format:** Respond *only* with the following key-value pairs on separate lines, ensuring maximum accuracy for each value. Do not add any extra explanation or commentary.
+
+Name: [${query} or Specific Name Found]
+Serving Size: [Common Serving Size]
+Calories: [Accurate Number or 0]
+Total Carbs: [Accurate Number or 0]
+Fiber: [Accurate Number or 0]
+Sugar Alcohols: [Accurate Number or 0]
+Net Carbs: [Accurate Calculated Number or 0]
+Protein: [Accurate Number or 0]
+Fat: [Accurate Number or 0]
+
+Fat: [Accurate Number or 0]
+        ` // Note: Example values might vary, AI should find current best data
+      }
+    ];
+  }
 
   try {
-    const aiResponseText = await analyzeFood(prompt);
-    console.log('[foodService] AI analysis response:\n', aiResponseText);
+    // Pass the constructed messages array to analyzeFood
+    const aiResponseText = await analyzeFood(messages);
+    console.log('[foodService] AI analysis response text received:', aiResponseText);
 
-    // parseAIResponseToFood now also returns NotFoundMarker or null
-    const parsedResult = parseAIResponseToFood(query, aiResponseText); 
+    // Pass isBarcodeQuery to the parser
+    const parsedResult = parseAIResponseToFood(query, aiResponseText, isBarcodeQuery);
 
-    if (parsedResult === null) {
-       // Parsing failed completely
-       console.warn('[foodService] Could not parse AI response into Food object for query:', query);
-       // Return a minimal object indicating parsing failure
+    if (parsedResult === null || (parsedResult as Food).brand === 'Parsing Failed') {
+       // Handle complete parsing failure or partial failure state
+       console.warn('[foodService] Could not parse AI response or parsing failed for query:', query);
+       // Return a minimal object indicating parsing failure - Ensure ketoRating is set
        return {
            id: `parse_err_${Date.now()}`,
            name: query,
            brand: 'Parsing Failed',
            servingSize: 'N/A',
-           macros: { carbs: 0, protein: 0, fat: 0, calories: 0 },
+           macros: { carbs: 0, protein: 0, fat: 0, calories: 0 }, // Use 0 for carbs here
+           ketoRating: getKetoRating(0), // Assign a default rating based on 0 net carbs
            description: 'AI response could not be parsed.',
            dateAdded: new Date().toISOString(),
-           isKetoFriendly: false,
-       } as Food; // Cast to Food for simplicity here, UI will handle
+       } as Food;
     }
-    
-    // Return the parsed Food object or the NotFoundMarker
-    return parsedResult; 
 
-  } catch (aiError) {
+    // Return the parsed Food object or the NotFoundMarker
+    return parsedResult;
+
+  } catch (aiError: any) {
     console.error('[foodService] AI analysis failed for query:', query, aiError);
-    return null; // Return null if AI call itself fails
+    // Include the error message from aiService if possible
+    return null; 
   }
 };
 
-// Updated parser return type
-const parseAIResponseToFood = (originalQuery: string, text: string): Food | NotFoundMarker | null => {
+// Updated parser signature and logic
+const parseAIResponseToFood = (originalQuery: string, text: string, isBarcodeQuery: boolean): Food | NotFoundMarker | null => {
   try {
-    let status: 'Found' | 'NotFound' | 'Unknown' = 'Unknown';
+    let status: 'Found' | 'NotFound' | 'Unknown' = isBarcodeQuery ? 'Unknown' : 'Found';
     let name = "N/A";
     let servingSize = "N/A";
-    let carbs = 0;
+    let totalCarbs = 0; // Keep track of total carbs
+    let fiber = 0;
+    let sugarAlcohols = 0;
+    let parsedNetCarbs: number | null = null; // Store net carbs if AI provides it directly
     let protein = 0;
     let fat = 0;
     let calories = 0;
+    let parsedSomething = false;
 
     const lines = text.trim().split('\n');
     console.log("[parseAIResponseToFood] Lines:", lines);
@@ -154,53 +239,97 @@ const parseAIResponseToFood = (originalQuery: string, text: string): Food | NotF
       const parts = line.split(':');
       if (parts.length >= 2) {
         const key = parts[0].trim().toLowerCase();
-        const value = parts.slice(1).join(':').trim(); 
+        const value = parts.slice(1).join(':').trim();
 
-        if (key === 'status') {
+        if (isBarcodeQuery && key === 'status') {
           if (value.toLowerCase() === 'notfound') status = 'NotFound';
           else if (value.toLowerCase() === 'found') status = 'Found';
+          else status = 'Unknown';
+          parsedSomething = true;
         }
-        else if (key === 'name') name = value;
-        else if (key === 'serving size') servingSize = value;
-        else if (key === 'calories') calories = parseFloat(value) || 0;
-        else if (key === 'carbs') carbs = parseFloat(value) || 0;
-        else if (key === 'protein') protein = parseFloat(value) || 0;
-        else if (key === 'fat') fat = parseFloat(value) || 0;
+        else if (key === 'name') { name = value; parsedSomething = true; }
+        else if (key === 'serving size') { servingSize = value; parsedSomething = true; }
+        else if (key === 'calories') { calories = parseFloat(value) || 0; parsedSomething = true; }
+        else if (key === 'total carbs') { totalCarbs = parseFloat(value) || 0; parsedSomething = true; }
+        else if (key === 'fiber') { fiber = parseFloat(value) || 0; parsedSomething = true; }
+        else if (key === 'sugar alcohols') { sugarAlcohols = parseFloat(value) || 0; parsedSomething = true; }
+        else if (key === 'net carbs') {
+            const parsedVal = parseFloat(value);
+            if (!isNaN(parsedVal)) { // Check if parsing was successful
+                parsedNetCarbs = parsedVal;
+            } else {
+                parsedNetCarbs = null; // Set to null if AI gives non-numeric like "N/A"
+            }
+            parsedSomething = true; 
+        }
+        else if (key === 'protein') { protein = parseFloat(value) || 0; parsedSomething = true; }
+        else if (key === 'fat') { fat = parseFloat(value) || 0; parsedSomething = true; }
       }
     });
 
     console.log("[parseAIResponseToFood] Parsed Status:", status);
-    console.log("[parseAIResponseToFood] Parsed Values:", { name, servingSize, calories, carbs, protein, fat });
+    console.log("[parseAIResponseToFood] Parsed Values:", { name, servingSize, calories, totalCarbs, fiber, sugarAlcohols, parsedNetCarbs, protein, fat });
 
-    if (status === 'NotFound') {
-       console.log("[parseAIResponseToFood] AI reported NotFound.");
-       return { status: 'not_found', query: originalQuery };
+    // --- Barcode Not Found Handling ---
+    if (isBarcodeQuery && (status as 'Found' | 'NotFound' | 'Unknown') === 'NotFound') {
+        console.log("[parseAIResponseToFood] Barcode reported as NotFound by AI.");
+        return { status: 'not_found', query: originalQuery };
+    }
+    // --- End Barcode Handling ---
+
+    // If parsing failed to get any meaningful value other than potentially status
+    if (!parsedSomething) {
+        console.warn("[parseAIResponseToFood] Failed to parse any meaningful data from lines.");
+        // Don't return null, return the specific 'Parsing Failed' structure
+        // Need to assign a ketoRating even for failure cases
+        const defaultRating = getKetoRating(0); // Rating based on 0 net carbs
+        return {
+           id: `parse_fail_${Date.now()}`,
+           name: originalQuery,
+           brand: 'Parsing Failed', 
+           servingSize: 'N/A',
+           macros: { carbs: 0, protein: 0, fat: 0, calories: 0 },
+           ketoRating: defaultRating,
+           description: 'AI response could not be parsed.',
+           dateAdded: new Date().toISOString(),
+       } as Food;
     }
 
-    // If status wasn't explicitly NotFound, but we didn't parse anything useful, treat as failure
-    if (status === 'Unknown' && name === "N/A" && servingSize === "N/A" && calories === 0 && carbs === 0 && protein === 0 && fat === 0) {
-       console.warn("[parseAIResponseToFood] Failed to parse any meaningful data or status from lines.");
-       return null; // Indicate complete parsing failure
+    // --- Calculate Net Carbs and Keto Rating --- 
+    let finalNetCarbs: number;
+    if (parsedNetCarbs !== null) {
+        // Use net carbs if AI provided it directly and it's valid
+        finalNetCarbs = parsedNetCarbs;
+        console.log(`[parseAIResponseToFood] Using net carbs provided by AI: ${finalNetCarbs}`);
+    } else {
+        // Calculate net carbs if not provided or invalid
+        finalNetCarbs = Math.max(0, totalCarbs - fiber - sugarAlcohols);
+        console.log(`[parseAIResponseToFood] Calculated net carbs: ${totalCarbs} - ${fiber} - ${sugarAlcohols} = ${finalNetCarbs}`);
     }
-    
-    // Assume Status is Found (or wasn't provided but we got data)
-    const macros: Macro = { carbs, protein, fat, calories };
-    const ketoFriendly = isKetoFriendly(macros);
-    console.log("[parseAIResponseToFood] Calculated Keto Friendly:", ketoFriendly);
+
+    const ketoRating = getKetoRating(finalNetCarbs);
+    console.log(`[parseAIResponseToFood] Determined keto rating: ${ketoRating}`);
+    // --- End Calculation ---
 
     return {
-      id: `ai_${Date.now()}`,
-      name: name, 
-      brand: 'AI Analyzed',
-      servingSize: servingSize, 
-      macros: macros,
-      description: text, 
+      id: `${originalQuery}_${Date.now()}`, // Generate a simple ID
+      name: name,
+      brand: isBarcodeQuery ? 'Barcode Lookup' : 'AI Search', // Indicate source
+      servingSize: servingSize,
+      macros: {
+        // IMPORTANT: Store the calculated/validated *net carbs* in the 'carbs' field
+        carbs: finalNetCarbs, 
+        protein: protein,
+        fat: fat,
+        calories: calories
+      },
+      ketoRating: ketoRating, // Use the calculated rating
       dateAdded: new Date().toISOString(),
-      isKetoFriendly: ketoFriendly,
-    };
-  } catch (e) {
-    console.error('[foodService] Error parsing AI response:', e);
-    return null;
+    } as Food;
+
+  } catch (error) {
+    console.error("[parseAIResponseToFood] Error parsing AI response:", error);
+    return null; // Return null on unexpected parsing error
   }
 };
 
@@ -209,8 +338,11 @@ const parseAIResponseToFood = (originalQuery: string, text: string): Food | NotF
 export interface NutritionLabelData {
   name?: string;
   servingSize?: string;
-  calories?: number | string; // Allow string initially for easier form setting
-  carbs?: number | string;
+  calories?: number | string;
+  totalCarbs?: number | string; // Renamed from carbs
+  fiber?: number | string;
+  sugarAlcohols?: number | string;
+  netCarbs?: number | string; // Added net carbs
   protein?: number | string;
   fat?: number | string;
   error?: string; // To capture errors from the function
@@ -228,11 +360,20 @@ export const getNutritionFromImageAI = async (imageBase64: string): Promise<Nutr
   const messages = [
     {
       role: 'system',
-      content: 'You are an expert nutrition label analyzer. Analyze the provided image and extract the key nutritional facts.'
+      content: 'You are an expert nutrition label analyzer. Analyze the provided image and extract the key nutritional facts. Calculate net carbs.'
     },
     {
       role: 'user',
-      content: `Analyze the provided image of a nutrition facts label. Extract the following information accurately. If a value is not clearly present or readable, use "N/A" for strings or 0 for numbers. Respond ONLY with a valid JSON object containing these keys: "name", "servingSize", "calories", "carbs", "protein", "fat". Do not include markdown formatting (\`\`\`) around the JSON. Example: {"name": "Example Product", "servingSize": "1 cup (240g)", "calories": 150, "carbs": 10, "protein": 5, "fat": 8}. If you cannot perform the analysis, return JSON with an error key: {"error": "Could not analyze image"}.`
+      // Updated prompt requesting net carbs
+      content: `Analyze the provided image of a nutrition facts label. Extract the following information accurately. If a value is not clearly present or readable, use "N/A" for strings or 0 for numbers. 
+
+Calculate Net Carbs using the formula: Net Carbs = Total Carbohydrates - Dietary Fiber - Sugar Alcohols. If Fiber or Sugar Alcohols are not present, not applicable, or zero, treat them as 0 in the calculation. 
+
+Respond ONLY with a valid JSON object containing these keys: "name", "servingSize", "calories", "totalCarbs", "fiber", "sugarAlcohols", "netCarbs", "protein", "fat". Do not include markdown formatting (\`\`\`) around the JSON. 
+
+Example: {"name": "Example Keto Bar", "servingSize": "1 bar (40g)", "calories": 180, "totalCarbs": 15, "fiber": 8, "sugarAlcohols": 4, "netCarbs": 3, "protein": 10, "fat": 12}. 
+
+If you cannot perform the analysis, return JSON with an error key: {"error": "Could not analyze image"}.`
     }
   ];
 
@@ -248,84 +389,50 @@ export const getNutritionFromImageAI = async (imageBase64: string): Promise<Nutr
     const apiKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
     const functionUrl = `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/openai-proxy`;
 
-    if (!apiKey) {
-      return { error: 'Supabase API Key not configured.' };
-    }
-    if (!functionUrl) {
-      return { error: 'Supabase Function URL not configured.' };
-    }
-
-    // Updated payload to send imageBase64
-    const requestBody = {
-        messages: messages,
-        imageBase64: imageBase64 // Send the Base64 string
-    };
-
     const response = await fetch(functionUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-            'apikey': apiKey
-        },
-        body: JSON.stringify(requestBody)
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'apikey': apiKey!, // Add Supabase anon key
+      },
+      body: JSON.stringify({ messages: messages, imageBase64: imageBase64 })
     });
 
-    console.log('[foodService] Fetch response status:', response.status);
-
+    console.log('[foodService] Proxy response status:', response.status);
     if (!response.ok) {
-        const errorBody = await response.json();
-        console.error('[foodService] Fetch error response body:', errorBody);
-        const detail = errorBody.details || errorBody.error || 'Unknown function error';
-        throw new Error(`Function Error: ${detail}`);
+      const errorBody = await response.text();
+      console.error('[foodService] Proxy function call failed:', errorBody);
+      throw new Error(`Proxy Error (${response.status}): ${errorBody}`);
     }
 
-    const responseData = await response.json();
-    console.log('[foodService] Raw AI Response Data:', responseData);
-
-    if (responseData.error) {
-        console.error('[foodService] OpenAI API returned an error:', responseData.error);
-        return { error: `AI Analysis Error: ${responseData.error}` };
+    const proxyResponse = await response.json(); // Proxy returns the full OpenAI ChatCompletion object
+    
+    // Extract the actual message content
+    const aiMessageContent = proxyResponse.choices?.[0]?.message?.content;
+    if (!aiMessageContent) {
+        console.error("[foodService] No message content found in proxy response:", proxyResponse);
+        throw new Error("AI response structure invalid or missing content.");
     }
+    
+    console.log('[foodService] AI Message Content (from proxy):', aiMessageContent);
 
-    if (!responseData.choices || responseData.choices.length === 0 || !responseData.choices[0].message || !responseData.choices[0].message.content) {
-      console.error('[foodService] Unexpected OpenAI response format:', responseData);
-      return { error: 'Invalid response format from AI.' };
-    }
-
-    const content = responseData.choices[0].message.content.trim();
-
-    // Attempt to parse the content as JSON
+    // Parse the JSON string within the message content
     try {
-        const nutritionData: NutritionLabelData = JSON.parse(content);
-        console.log('[foodService] Successfully parsed JSON response:', nutritionData);
-
-        if (nutritionData.error) {
-           console.warn('[foodService] AI reported an analysis error:', nutritionData.error);
-           return { error: `AI could not analyze image: ${nutritionData.error}` };
-        }
-
-        // Format data before returning
-        const formattedData: NutritionLabelData = {
-            name: nutritionData.name || 'N/A',
-            servingSize: nutritionData.servingSize || 'N/A',
-            calories: nutritionData.calories !== undefined && nutritionData.calories !== null ? String(nutritionData.calories) : '0',
-            carbs: nutritionData.carbs !== undefined && nutritionData.carbs !== null ? String(nutritionData.carbs) : '0',
-            protein: nutritionData.protein !== undefined && nutritionData.protein !== null ? String(nutritionData.protein) : '0',
-            fat: nutritionData.fat !== undefined && nutritionData.fat !== null ? String(nutritionData.fat) : '0',
-        };
-        return formattedData;
-
+        const nutritionData: NutritionLabelData = JSON.parse(aiMessageContent);
+        console.log('[foodService] Parsed Nutrition Data:', nutritionData);
+        
+        // Return the parsed data (or data with error if AI returned an error JSON)
+        return nutritionData;
     } catch (parseError) {
-      console.error('[foodService] Failed to parse AI response content as JSON:', content, parseError);
-      return { error: 'Failed to understand AI response.' };
+        console.error("[foodService] Failed to parse AI message content JSON:", parseError);
+        console.error("[foodService] Content that failed parsing:", aiMessageContent);
+        return { error: "Failed to parse AI response JSON." };
     }
 
   } catch (error: any) {
-    console.error('[foodService] Error calling OpenAI proxy function:', error);
-    // Check if error.message already contains the detailed message from the !response.ok block
-    const message = error.message?.includes('Function Error:') ? error.message : `Failed to analyze image: ${error.message}`;
-    return { error: message };
+    console.error('[foodService] Error during nutrition label analysis:', error);
+    return { error: error.message || 'An unknown error occurred' };
   }
 };
 

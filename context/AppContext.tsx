@@ -30,6 +30,9 @@ interface AppContextProps {
   editWeightEntry: (entryId: string, updatedWeightKg: number) => Promise<void>;
   deleteWeightEntry: (entryId: string) => Promise<void>;
   signOut: () => Promise<void>;
+  favoriteFoods: Food[];
+  addFavoriteFood: (food: Food) => Promise<void>;
+  removeFavoriteFood: (foodId: string) => Promise<void>;
 }
 
 const DEFAULT_USER_PROFILE: Omit<UserProfile, 'id'> = {
@@ -65,6 +68,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [meals, setMeals] = useState<Meal[]>([]);
   const [todayMacros, setTodayMacros] = useState<DailyMacros>(DEFAULT_DAILY_MACROS);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [favoriteFoods, setFavoriteFoods] = useState<Food[]>([]);
   const [conversations, setConversations] = useState<AIConversation[]>([]);
   const [weightHistory, setWeightHistory] = useState<WeightEntry[]>([]);
   const [currentConversationState, setCurrentConversationState] = useState<AIConversation | null>(null);
@@ -135,6 +139,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setUserProfile(null);
       setMeals([]);
       setWeightHistory([]);
+      setFavoriteFoods([]);
       setTodayMacros(DEFAULT_DAILY_MACROS);
       setConversations([]);
       setCurrentConversationState(null);
@@ -153,16 +158,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setIsLoading(true); 
     let loadedProfile: UserProfile | null = null;
     try {
-      await new Promise(resolve => setTimeout(resolve, 100)); 
-      console.log(`[AppContext] Proceeding with load after short delay for user: ${userId}`);
+      console.log(`[AppContext] Proceeding with load for user: ${userId}`);
 
-      const [profileResult, mealsResult, weightResult] = await Promise.all([
+      const [profileResult, mealsResult, weightResult, favoritesResult] = await Promise.all([
         supabase.from('user_profiles').select('*').eq('user_id', userId).single(),
         supabase.from('meals').select('*').eq('user_id', userId),
         supabase.from('weight_history')
             .select('id, user_id, entry_date, weight_kg')
             .eq('user_id', userId)
-            .order('entry_date', { ascending: false })
+            .order('entry_date', { ascending: false }),
+        supabase.from('favorite_foods').select('food_data').eq('user_id', userId)
       ]);
 
       // --- Initialize Local State ---
@@ -170,6 +175,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setMeals([]); // Will be set below
       setConversations([]); // Not currently persisted
       setWeightHistory([]); // Will be set below
+      setFavoriteFoods([]); // <-- Initialize favorites state
       setTodayMacros(DEFAULT_DAILY_MACROS); // Will be recalculated below
       setUserProfile(null); // Will be set below
       let appMeals: Meal[] = []; // Temporary variable to hold fetched meals
@@ -209,6 +215,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           console.log(`[AppContext] Successfully parsed and loaded weight history for ${userId}`);
         }
       } catch (e) { console.error(`[AppContext] Error parsing weight history for ${userId}:`, e); }
+      
+      // --- Process Favorites --- 
+      try {
+          if (favoritesResult.error) {
+              console.error("[AppContext] Error fetching favorites:", favoritesResult.error);
+          } else if (favoritesResult.data) {
+              // Extract the food_data object from each row
+              const favs = favoritesResult.data.map(fav => fav.food_data as Food);
+              setFavoriteFoods(favs);
+              console.log(`[AppContext] Successfully loaded ${favs.length} favorite foods for user ${userId}`);
+          }
+      } catch (e) { console.error(`[AppContext] Error parsing favorites for ${userId}:`, e); }
+      // --- End Process Favorites ---
       
       try {
         if (profileResult.data) {
@@ -585,10 +604,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setCurrentConversationState(conversation);
   }, []);
 
-  const checkIfFoodIsKetoFriendly = (macros: { carbs: number; fat: number; protein: number }) => {
-    return macros.carbs >= 0 && macros.carbs <= 7;
-  };
-
   const clearData = useCallback(async () => {
     if (!user?.id) {
       Alert.alert("Error", "No user logged in to clear data for.");
@@ -677,8 +692,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         .single();
 
     if (error) {
-        console.error("[AppContext] Error updating weight entry:", error.message);
-        Alert.alert("Error", `Could not update weight entry: ${error.message}`);
+        console.error(`[AppContext] Error updating weight entry ${entryId}:`, error);
+        Alert.alert("Error", `Could not update weight entry: ${error.message || error}`);
     } else if (data) {
         console.log(`[AppContext] Weight entry ${entryId} updated successfully.`);
         const updatedEntry = data as WeightEntry;
@@ -732,6 +747,72 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         }
     }
   }, [user?.id, weightHistory, userProfile, updateUserProfile]);
+
+  // --- Favorite Functions --- 
+
+  const addFavoriteFood = useCallback(async (food: Food) => {
+    if (!user?.id) {
+      Alert.alert("Error", "You must be logged in to add favorites.");
+      return;
+    }
+    if (!food || !food.id) {
+        Alert.alert("Error", "Invalid food item provided.");
+        return;
+    }
+    
+    // Check if already favorited
+    const isAlreadyFavorite = favoriteFoods.some(fav => fav.id === food.id);
+    if (isAlreadyFavorite) {
+        Alert.alert("Info", `${food.name} is already in your favorites.`);
+        return;
+    }
+
+    console.log(`[AppContext] Adding favorite: ${food.name} (ID: ${food.id})`);
+    const { error } = await supabase
+      .from('favorite_foods')
+      .insert({ user_id: user.id, food_data: food })
+      .select(); // Added select() to potentially get back the inserted row if needed
+
+    if (error) {
+      console.error("[AppContext] Error adding favorite food:", error);
+      Alert.alert("Error", `Could not add favorite: ${error.message}`);
+    } else {
+      console.log(`[AppContext] Favorite ${food.name} added successfully.`);
+      setFavoriteFoods(prev => [...prev, food]);
+      Alert.alert("Favorite Added", `${food.name} added to favorites.`);
+    }
+  }, [user?.id, favoriteFoods]);
+
+  const removeFavoriteFood = useCallback(async (foodId: string) => {
+    if (!user?.id) {
+      Alert.alert("Error", "You must be logged in to remove favorites.");
+      return;
+    }
+    if (!foodId) {
+        Alert.alert("Error", "Invalid food ID provided.");
+        return;
+    }
+
+    console.log(`[AppContext] Removing favorite with food ID: ${foodId}`);
+    const { error } = await supabase
+      .from('favorite_foods')
+      .delete()
+      .eq('user_id', user.id)
+      // Match the 'id' field *inside* the 'food_data' JSONB column
+      .eq('food_data->>id', foodId); 
+
+    if (error) {
+      console.error("[AppContext] Error removing favorite food:", error);
+      Alert.alert("Error", `Could not remove favorite: ${error.message}`);
+    } else {
+      const removedFoodName = favoriteFoods.find(fav => fav.id === foodId)?.name || 'Item';
+      console.log(`[AppContext] Favorite ${removedFoodName} (ID: ${foodId}) removed successfully.`);
+      setFavoriteFoods(prev => prev.filter(fav => fav.id !== foodId));
+      Alert.alert("Favorite Removed", `${removedFoodName} removed from favorites.`);
+    }
+  }, [user?.id, favoriteFoods]);
+
+  // --- End Favorite Functions ---
 
   const calculateMacrosForDay = useCallback((allMeals: Meal[], date: string, profile: UserProfile | null): DailyMacros => {
     console.log(`[calculateMacrosForDay] Calculating for date: ${date}. Received ${allMeals.length} total meals.`);
@@ -802,11 +883,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     addMessageToConversation,
     createNewConversation,
     setCurrentConversation,
-    checkIfFoodIsKetoFriendly,
     clearData,
     editWeightEntry,
     deleteWeightEntry,
-    signOut
+    signOut,
+    favoriteFoods,
+    addFavoriteFood,
+    removeFavoriteFood
   }), [
     foods,
     meals,
@@ -826,13 +909,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     addMessageToConversation,
     createNewConversation,
     setCurrentConversation,
-    checkIfFoodIsKetoFriendly,
     clearData,
     editWeightEntry,
     deleteWeightEntry,
     signOut,
     calculateRemainingMacros,
-    calculateMacrosForDay
+    calculateMacrosForDay,
+    favoriteFoods,
+    addFavoriteFood,
+    removeFavoriteFood
   ]);
 
   return (

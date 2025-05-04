@@ -75,10 +75,6 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onScan, onClose }) => {
           </Text>
         </View>
         
-        <TouchableOpacity style={styles.closeButton} onPress={onClose}>
-          <X size={24} color="#fff" />
-        </TouchableOpacity>
-        
         {scanned && (
           <TouchableOpacity 
             style={styles.scanAgainButton}
@@ -89,6 +85,16 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onScan, onClose }) => {
           </TouchableOpacity>
         )}
       </CameraView>
+
+      <TouchableOpacity 
+        style={styles.closeButton} 
+        onPress={() => {
+          console.log("[BarcodeScanner] Close button pressed!");
+          onClose();
+        }}
+      >
+        <X size={24} color="#fff" />
+      </TouchableOpacity>
     </View>
   );
 };
@@ -129,7 +135,8 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center',
-    alignItems: 'center'
+    alignItems: 'center',
+    zIndex: 99
   },
   instructionContainer: {
     position: 'absolute',

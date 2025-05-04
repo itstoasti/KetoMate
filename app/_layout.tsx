@@ -1,7 +1,7 @@
 import 'react-native-get-random-values';
 
 import React, { useEffect } from 'react';
-import { Platform } from 'react-native';
+import { Platform, View, ActivityIndicator } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
@@ -42,38 +42,63 @@ function RootLayout() {
   // Use framework ready hook (if still needed for other reasons)
   useFrameworkReady();
   
-  const isAppReady = (fontsLoaded || fontError) && !isAppContextLoading;
+  // App is ready visually once fonts are loaded/failed
+  const isFontReady = fontsLoaded || fontError;
 
   useEffect(() => {
-    if (!isAppReady) return;
+    // Log the state *before* checking conditions
+    console.log(`[RootLayout] Effect Run: isFontReady=${isFontReady}, isAppContextLoading=${isAppContextLoading}, session=${!!session}, segments=${JSON.stringify(segments)}`);
+
+    // Wait until fonts are ready AND context loading is finished before redirecting
+    if (!isFontReady || isAppContextLoading) {
+        console.log("[RootLayout] Effect Exit: Fonts or App Context not ready yet for navigation.");
+        return;
+    }
 
     const inAuthGroup = segments[0] === '(auth)';
     const inTabsGroup = segments[0] === '(tabs)';
 
-    console.log(`[RootLayout] Effect Check: isAppReady=${isAppReady}, session=${!!session}, segments=${JSON.stringify(segments)}, inAuthGroup=${inAuthGroup}, inTabsGroup=${inTabsGroup}`);
+    console.log(`[RootLayout] Effect Check: isFontReady=${isFontReady}, isAppContextLoading=${isAppContextLoading}, session=${!!session}, segments=${JSON.stringify(segments)}, inAuthGroup=${inAuthGroup}, inTabsGroup=${inTabsGroup}`);
 
     if (session && !inTabsGroup) {
-      console.log("[RootLayout] Session exists, not in tabs. Redirecting to / ...");
+      console.log("[RootLayout] Redirecting to / (inside tabs group)...");
       router.replace('/');
     } else if (!session && !inAuthGroup) {
-      console.log("[RootLayout] No session, not in auth. Redirecting to login...");
+      console.log("[RootLayout] Redirecting to /login (inside auth group)...");
       router.replace('/(auth)/login');
+    } else {
+      console.log("[RootLayout] No redirection needed.");
     }
 
-  }, [session, isAppReady, segments, router]);
+  }, [session, isFontReady, isAppContextLoading, segments, router]);
 
   useEffect(() => {
-    if (isAppReady) {
+    // Hide splash screen as soon as fonts are ready
+    if (isFontReady) {
       SplashScreen.hideAsync();
+      console.log("[RootLayout] Fonts ready, hiding splash screen.");
     }
-  }, [isAppReady]);
+  }, [isFontReady]);
   
-  // Keep showing splash screen while loading
-  if (!isAppReady) {
+  // Return null only if fonts are not ready
+  if (!isFontReady) {
+    console.log("[RootLayout] Fonts not ready, returning null (showing splash).");
     return null;
   }
 
-  // Render the Stack unconditionally now, the useEffect handles redirection
+  // If fonts are ready, but context is still loading, show loading indicator
+  if (isAppContextLoading) {
+    console.log("[RootLayout] Fonts ready, context loading, showing ActivityIndicator.");
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" />
+        <StatusBar style="dark" />
+      </View>
+    );
+  }
+
+  // If fonts are ready AND context is loaded, render the main app
+  console.log("[RootLayout] Fonts and context ready, rendering Stack navigator.");
   return (
     <>
       <Stack screenOptions={{ 

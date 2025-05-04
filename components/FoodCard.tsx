@@ -1,33 +1,58 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Food } from '@/types';
-import { CircleCheck as CheckCircle2, Circle as XCircle, ChevronRight } from 'lucide-react-native';
+import { CircleCheck as CheckCircle2, Circle as XCircle, ChevronRight, Star } from 'lucide-react-native';
 
 interface FoodCardProps {
   food: Food;
   onPress?: () => void;
+  isFavorite?: boolean;
+  onToggleFavorite?: () => void;
 }
 
-const FoodCard: React.FC<FoodCardProps> = ({ food, onPress }) => {
+// Helper function to get style based on rating
+const getRatingStyle = (rating: Food['ketoRating']) => {
+  switch (rating) {
+    case 'Keto-Friendly':
+      return styles.ketoFriendly; // Green
+    case 'Limit':
+      return styles.limit; // Yellow
+    case 'Strictly Limit':
+      return styles.strictlyLimit; // Red
+    case 'Avoid':
+      return styles.avoid; // Red
+    default:
+      return styles.unknownRating; // Default style
+  }
+};
+
+const FoodCard: React.FC<FoodCardProps> = ({ food, onPress, isFavorite, onToggleFavorite }) => {
+  const ratingStyle = getRatingStyle(food.ketoRating);
+
   return (
     <TouchableOpacity 
       style={styles.container} 
       onPress={onPress}
-      activeOpacity={0.7}
+      disabled={!onPress}
+      activeOpacity={onPress ? 0.7 : 1}
     >
+      {onToggleFavorite && (
+        <TouchableOpacity 
+          style={styles.favoriteButton}
+          onPress={onToggleFavorite} 
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Star 
+            size={24} 
+            color={isFavorite ? "#FFC107" : "#ccc"} 
+            fill={isFavorite ? "#FFC107" : "none"} 
+          />
+        </TouchableOpacity>
+      )}
+      
       <View style={styles.header}>
-        <Text style={styles.name}>{food.name}</Text>
-        {food.isKetoFriendly ? (
-          <View style={styles.ketoTag}>
-            <CheckCircle2 size={16} color="#4CAF50" />
-            <Text style={styles.ketoText}>Keto</Text>
-          </View>
-        ) : (
-          <View style={styles.nonKetoTag}>
-            <XCircle size={16} color="#FF5252" />
-            <Text style={styles.nonKetoText}>Non-Keto</Text>
-          </View>
-        )}
+        <Text style={styles.name} numberOfLines={2}>{food.name}</Text>
+        <Text style={[styles.ratingBase, ratingStyle]}>{food.ketoRating}</Text>
       </View>
       
       {food.brand && (
@@ -74,47 +99,59 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 3,
-    elevation: 2
+    elevation: 2,
+    position: 'relative',
+  },
+  favoriteButton: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    padding: 6,
+    zIndex: 1,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8
+    marginBottom: 8,
+    paddingRight: 30,
   },
   name: {
     fontSize: 16,
     fontWeight: '600',
     color: '#333',
-    flex: 1
+    flex: 1,
+    marginRight: 8,
   },
-  ketoTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(76, 175, 80, 0.1)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8
-  },
-  ketoText: {
+  ratingBase: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#4CAF50',
-    marginLeft: 4
+    fontWeight: 'bold',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    overflow: 'hidden',
+    alignSelf: 'flex-start',
+    marginLeft: 'auto',
   },
-  nonKetoTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 82, 82, 0.1)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8
+  ketoFriendly: {
+    color: '#166534',
+    backgroundColor: '#D1FAE5',
   },
-  nonKetoText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FF5252',
-    marginLeft: 4
+  limit: {
+    color: '#854d0e',
+    backgroundColor: '#FEF9C3',
+  },
+  strictlyLimit: {
+    color: '#991b1b',
+    backgroundColor: '#FEE2E2',
+  },
+  avoid: {
+    color: '#991b1b',
+    backgroundColor: '#FEE2E2',
+  },
+  unknownRating: {
+    color: '#555',
+    backgroundColor: '#EAEAEA',
   },
   brand: {
     fontSize: 14,

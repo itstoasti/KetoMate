@@ -12,7 +12,7 @@ export interface Food {
   servingSize: string;
   macros: Macro;
   barcode?: string;
-  isKetoFriendly: boolean;
+  ketoRating: 'Keto-Friendly' | 'Limit' | 'Strictly Limit' | 'Avoid';
   dateAdded: string;
   description?: string;
 }

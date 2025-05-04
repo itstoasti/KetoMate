@@ -4,10 +4,32 @@
     "slug": "bolt-expo-nativewind",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./ketomate-icons/android/playstore-icon.png",
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "linking": {
+      "enabled": true,
+      "prefixes": [
+        "myapp"
+      ],
+      "config": {
+        "screens": {
+          "(tabs)": {
+             "path": "/",
+             "screens": {
+               "index": "",
+               "track": "track",
+               "history": "history",
+               "assistant": "assistant",
+               "profile": "profile"
+             }
+          },
+          "(auth)/login": "login",
+          "+not-found": "*"
+        }
+      }
+    },
     "ios": {
       "supportsTablet": true
     },

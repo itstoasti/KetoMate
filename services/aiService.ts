@@ -1,34 +1,41 @@
 import { supabase } from '../lib/supabaseClient'; // Assuming client is here
+import { ChatCompletionMessageParam } from 'openai/resources/chat/completions'; // Assuming types might be available
 
 // Remove OpenAI import and initialization
 // No need for API key check here anymore
 
-export const analyzeFood = async (foodItem: string): Promise<string> => {
+export const analyzeFood = async (messages: ChatCompletionMessageParam[]): Promise<string> => {
+  console.log("[aiService] Forwarding messages to openai-proxy...");
   try {
-    const messages = [
-      {
-        role: 'system',
-        content: 'You are a keto diet nutrition expert assistant. Respond concisely. When providing macronutrients, use the EXACT format: "Calories: VALUE, Carbs: VALUE, Protein: VALUE, Fat: VALUE" using numerical values only for VALUE (e.g., Carbs: 2.5). Provide this information per common serving size.'
-      },
-      {
-        role: 'user',
-        content: `Analyze the food item or barcode query: "${foodItem}". Provide its typical macronutrients per common serving size (using the specified format) and explain if it is generally considered keto-friendly based on these macros.`
-      }
-    ];
-
-    // Invoke the Supabase Edge Function
+    // Invoke the Supabase Edge Function, passing the messages array directly
     const { data, error } = await supabase.functions.invoke('openai-proxy', {
-      body: { messages } // Send messages in the body
+      body: { messages } // Pass the pre-constructed messages array
     });
 
-    if (error) throw error; // Throw if Supabase function invocation fails
-    if (data.error) throw new Error(data.error); // Throw if the Edge Function returned an error message
+    if (error) {
+        console.error("[aiService] Supabase function invocation error:", error);
+        throw error;
+    }
+    
+    // Edge function might return an error object within data
+    if (data.error) {
+        console.error("[aiService] Edge function returned error:", data.error);
+        throw new Error(typeof data.error === 'string' ? data.error : JSON.stringify(data.error));
+    }
 
-    return data.response || 'Unable to analyze this food.'; // Extract the response from the function's return value
-  } catch (error) {
-    console.error('Error analyzing food with AI Function:', error);
-    // Removed mock fallback
-    return 'Sorry, I could not analyze this food. Please try again later.';
+    // Parse the actual response content from the full ChatCompletion object returned by the proxy
+    const content = data?.choices?.[0]?.message?.content;
+    if (content) {
+        console.log("[aiService] Received content from proxy:", content.substring(0, 100) + "...");
+        return content;
+    } else {
+        console.error("[aiService] Invalid or missing content in proxy response:", data);
+        return 'Unable to analyze this food.'; // Fallback message
+    }
+
+  } catch (error: any) {
+    console.error('[aiService] Error analyzing food via proxy:', error);
+    return `Sorry, AI analysis failed: ${error.message}`;
   }
 };
 
@@ -53,10 +60,12 @@ export const getSuggestedMeals = async (preferences: string): Promise<string> =>
     if (error) throw error;
     if (data.error) throw new Error(data.error);
 
-    return data.response || 'Unable to generate meal suggestions.';
+    // Adjust response parsing similarly if needed
+    const content = data?.choices?.[0]?.message?.content;
+    return content || 'Unable to generate meal suggestions.'; 
+
   } catch (error) {
     console.error('Error getting meal suggestions from AI Function:', error);
-    // Removed mock fallback
     return 'Sorry, I could not generate meal suggestions. Please try again later.';
   }
 };
