@@ -229,7 +229,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
              // if (insertError) { console.error("Error creating default profile", insertError); }
              // else { setUserProfile(newProfile); appProfile = newProfile; loadedProfile = newProfile;}
              // For now, let's just set a null or default profile state if creation isn't implemented
-             const defaultProfile: UserProfile = { ...DEFAULT_USER_PROFILE, id: uuidv4(), user_id: userId };
+             const defaultProfile: UserProfile = {
+                ...DEFAULT_USER_PROFILE,
+                id: uuidv4(), // Generate a client-side ID
+                user_id: userId
+             };
              setUserProfile(defaultProfile);
              appProfile = defaultProfile;
              loadedProfile = defaultProfile;
@@ -547,7 +551,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           ...DEFAULT_USER_PROFILE,
           ...supabasePayload,
           user_id: user.id,
-          id: uuidv4()
+          // Don't specify id - let the database generate it
         };
         
         console.log("[AppContext] No existing profile found, creating new one:", newProfileData);
@@ -577,19 +581,23 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         console.log("[AppContext] Profile updated/created successfully in Supabase.");
         // Map the returned snake_case data to camelCase for the app state
         const dbProfile = data as any;
+        
+        // Log the actual fields returned by the database for debugging
+        console.log("[AppContext] Database profile data:", dbProfile);
+        
+        // Only include fields that actually exist in the database
         const appProfile: UserProfile = {
-            id: dbProfile.id,
+            id: dbProfile.id || uuidv4(), // Use a generated ID if not provided by DB
             user_id: dbProfile.user_id,
-            name: dbProfile.name,
-            weight: dbProfile.weight,
-            height: dbProfile.height,
-            goal: dbProfile.goal,
-            activityLevel: dbProfile.activity_level,
-            dailyMacroLimit: dbProfile.daily_macro_limit,
-            dailyCalorieLimit: dbProfile.daily_calories_limit,
-            heightUnit: dbProfile.height_unit,
-            weightUnit: dbProfile.weight_unit
-            // other fields like name, weight, height, goal are assumed to match
+            name: dbProfile.name || DEFAULT_USER_PROFILE.name,
+            weight: dbProfile.weight || DEFAULT_USER_PROFILE.weight,
+            height: dbProfile.height || DEFAULT_USER_PROFILE.height,
+            goal: dbProfile.goal || DEFAULT_USER_PROFILE.goal,
+            activityLevel: dbProfile.activity_level || DEFAULT_USER_PROFILE.activityLevel,
+            dailyMacroLimit: dbProfile.daily_macro_limit || DEFAULT_USER_PROFILE.dailyMacroLimit,
+            dailyCalorieLimit: dbProfile.daily_calories_limit || DEFAULT_USER_PROFILE.dailyCalorieLimit,
+            heightUnit: dbProfile.height_unit || DEFAULT_USER_PROFILE.heightUnit,
+            weightUnit: dbProfile.weight_unit || DEFAULT_USER_PROFILE.weightUnit
         };
         
         // Update local state with the *mapped* camelCase data
