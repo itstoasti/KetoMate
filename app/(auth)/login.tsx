@@ -11,6 +11,7 @@ export default function AuthScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [isSignUp, setIsSignUp] = useState(false); // Toggle between Sign In / Sign Up
+  const router = useRouter();
 
   async function signInWithEmail() {
     setLoading(true);
@@ -26,17 +27,24 @@ export default function AuthScreen() {
 
   async function signUpWithEmail() {
     setLoading(true);
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email: email,
       password: password,
     });
 
-    if (error) Alert.alert('Sign Up Error', error.message);
-    else Alert.alert('Sign Up Success', 'Please check your email for verification!'); // Inform user about verification
-    setLoading(false);
-     // User needs to verify email, they won't be logged in immediately
-     // Optionally switch back to sign in view after successful signup trigger
-     // setIsSignUp(false);
+    if (error) {
+      Alert.alert('Sign Up Error', error.message);
+      setLoading(false);
+    } else {
+      // User created successfully, redirect to onboarding
+      if (data?.user) {
+        Alert.alert('Account Created', 'Welcome to KetoMate! Let\'s set up your profile.');
+        // The onboarding redirect will happen automatically via _layout.tsx
+      } else {
+        Alert.alert('Sign Up Success', 'Please check your email for verification!');
+      }
+      setLoading(false);
+    }
   }
 
   return (

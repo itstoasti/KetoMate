@@ -1,6 +1,6 @@
 import 'react-native-get-random-values';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Platform, View, ActivityIndicator } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -24,7 +24,7 @@ export default function ProvidedRootLayout() {
 
 function RootLayout() {
   // Get session and loading state from context
-  const { session, isLoading: isAppContextLoading } = useAppContext();
+  const { session, isLoading: isAppContextLoading, userProfile } = useAppContext();
   const [fontsLoaded, fontError] = useFonts({
     'Inter-Regular': Inter_400Regular,
     'Inter-Medium': Inter_500Medium,
@@ -35,6 +35,9 @@ function RootLayout() {
     'Montserrat-SemiBold': Montserrat_600SemiBold,
     'Montserrat-Bold': Montserrat_700Bold,
   });
+  
+  // State to track if this is a new user who needs onboarding
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
   
   const router = useRouter();
   const segments = useSegments();
@@ -57,20 +60,31 @@ function RootLayout() {
 
     const inAuthGroup = segments[0] === '(auth)';
     const inTabsGroup = segments[0] === '(tabs)';
+    const inOnboardingGroup = segments[0] === '(onboarding)';
 
-    console.log(`[RootLayout] Effect Check: isFontReady=${isFontReady}, isAppContextLoading=${isAppContextLoading}, session=${!!session}, segments=${JSON.stringify(segments)}, inAuthGroup=${inAuthGroup}, inTabsGroup=${inTabsGroup}`);
+    // Check if user needs onboarding (has account but profile is new/incomplete)
+    const isProfileIncomplete = session && userProfile && 
+      (!userProfile.name || userProfile.name === 'User' || !userProfile.goal);
+    
+    setNeedsOnboarding(isProfileIncomplete);
 
-    if (session && !inTabsGroup) {
-      console.log("[RootLayout] Redirecting to / (inside tabs group)...");
-      router.replace('/');
-    } else if (!session && !inAuthGroup) {
+    console.log(`[RootLayout] Effect Check: isFontReady=${isFontReady}, isAppContextLoading=${isAppContextLoading}, session=${!!session}, segments=${JSON.stringify(segments)}, inAuthGroup=${inAuthGroup}, inTabsGroup=${inTabsGroup}, needsOnboarding=${isProfileIncomplete}`);
+
+    // Handle navigation based on session and onboarding status
+    if (!session && !inAuthGroup) {
       console.log("[RootLayout] Redirecting to /login (inside auth group)...");
       router.replace('/(auth)/login');
+    } else if (session && isProfileIncomplete && !inOnboardingGroup) {
+      console.log("[RootLayout] New user detected, redirecting to onboarding...");
+      router.replace('/(onboarding)');
+    } else if (session && !isProfileIncomplete && !inTabsGroup) {
+      console.log("[RootLayout] Redirecting to / (inside tabs group)...");
+      router.replace('/');
     } else {
       console.log("[RootLayout] No redirection needed.");
     }
 
-  }, [session, isFontReady, isAppContextLoading, segments, router]);
+  }, [session, userProfile, isFontReady, isAppContextLoading, segments, router]);
 
   useEffect(() => {
     // Hide splash screen as soon as fonts are ready
@@ -108,6 +122,7 @@ function RootLayout() {
       }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="(auth)/login" />
+        <Stack.Screen name="(onboarding)" />
         <Stack.Screen name="+not-found" options={{ title: 'Oops!' }} />
       </Stack>
       <StatusBar style="dark" />
