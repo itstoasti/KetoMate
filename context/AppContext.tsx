@@ -296,8 +296,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       console.log("[AppContext] loadData - Calculating today's macros...");
       // Ensure appProfile is not null before passing it
       if(appProfile) {
-          calculateAndSetTodayMacros(appMeals, appProfile);
-          console.log("[AppContext] loadData - Today's macros calculated.");
+          try {
+            const today = format(new Date(), 'yyyy-MM-dd');
+            const newTodayMacros = calculateMacrosForDay(appMeals, today, appProfile);
+            setTodayMacros(newTodayMacros);
+            console.log("[AppContext] loadData - Today's macros calculated.");
+          } catch (error) {
+            console.error("[AppContext] Error calculating today's macros:", error);
+            setTodayMacros(DEFAULT_DAILY_MACROS);
+          }
         } else {
            console.warn("[AppContext] loadData - Skipping macro calculation because profile is null.");
            // Set default macros if profile wasn't loaded/created
@@ -507,7 +514,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     // Exclude id and user_id explicitly (though they shouldn't be in profileData usually)
     delete supabasePayload.id;
-    delete supabasePayload.user_id;
+    // Always add user_id to payload to ensure proper record creation/matching
+    supabasePayload.user_id = user.id;
     // --- End Build Payload ---
 
     // Check if there's anything left to update
@@ -517,22 +525,65 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     } 
     
     console.log("[AppContext] Attempting to update profile in Supabase with explicit payload:", supabasePayload);
-    const { data, error } = await supabase
-      .from('user_profiles')
-      .update(supabasePayload) // Sending explicitly built payload
-      .eq('user_id', user.id) 
-      .select() 
-      .single();
-
-    if (error) {
-      console.error("[AppContext] Error updating profile:", JSON.stringify(error, null, 2));
-      Alert.alert("Error", `Could not update profile: ${error.message}`);
-    } else if (data) {
-        console.log("[AppContext] Profile updated successfully in Supabase.");
+    
+    try {
+      // First check if the profile exists
+      const { data: existingProfile, error: checkError } = await supabase
+        .from('user_profiles')
+        .select('id')
+        .eq('user_id', user.id)
+        .single();
+        
+      if (checkError && checkError.code !== 'PGRST116') {
+        // If it's an error other than "no rows returned", throw it
+        throw checkError;
+      }
+      
+      let result;
+      
+      if (!existingProfile) {
+        // Profile doesn't exist, create a new one with defaults plus provided data
+        const newProfileData = {
+          ...DEFAULT_USER_PROFILE,
+          ...supabasePayload,
+          user_id: user.id,
+          id: uuidv4()
+        };
+        
+        console.log("[AppContext] No existing profile found, creating new one:", newProfileData);
+        result = await supabase
+          .from('user_profiles')
+          .insert(newProfileData)
+          .select()
+          .single();
+      } else {
+        // Profile exists, just update it
+        console.log("[AppContext] Updating existing profile");
+        result = await supabase
+          .from('user_profiles')
+          .update(supabasePayload)
+          .eq('user_id', user.id)
+          .select()
+          .single();
+      }
+      
+      const { data, error } = result;
+      
+      if (error) {
+        throw error;
+      }
+      
+      if (data) {
+        console.log("[AppContext] Profile updated/created successfully in Supabase.");
         // Map the returned snake_case data to camelCase for the app state
         const dbProfile = data as any;
         const appProfile: UserProfile = {
-            ...dbProfile,
+            id: dbProfile.id,
+            user_id: dbProfile.user_id,
+            name: dbProfile.name,
+            weight: dbProfile.weight,
+            height: dbProfile.height,
+            goal: dbProfile.goal,
             activityLevel: dbProfile.activity_level,
             dailyMacroLimit: dbProfile.daily_macro_limit,
             dailyCalorieLimit: dbProfile.daily_calories_limit,
@@ -550,6 +601,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             limit: appProfile.dailyMacroLimit, // Use mapped appProfile
             remaining: calculateRemainingMacros(prev.total, appProfile.dailyMacroLimit) // Use mapped appProfile
         }));
+      }
+    } catch (error) {
+      console.error("[AppContext] Error updating profile:", error);
+      Alert.alert("Error", `Could not update profile: ${(error as any)?.message || 'Unknown error'}`);
     }
   }, [user?.id, calculateRemainingMacros]);
 
