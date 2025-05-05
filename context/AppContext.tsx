@@ -165,7 +165,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
       console.log("[AppContext] loadData - Before Promise.all"); // Log before Promise.all
       const [profileResult, mealsResult, weightResult, favoritesResult] = await Promise.all([
-        supabase.from('user_profiles').select('*').eq('user_id', userId).single(),
+        supabase.from('user_profiles').select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit, created_at, updated_at').eq('user_id', userId).single(),
         supabase.from('meals').select('*').eq('user_id', userId),
         supabase.from('weight_history')
             .select('id, user_id, entry_date, weight_kg') // Corrected select columns
@@ -558,7 +558,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         result = await supabase
           .from('user_profiles')
           .insert(newProfileData)
-          .select()
+          .select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit, created_at, updated_at') // Select known columns
           .single();
       } else {
         // Profile exists, just update it
@@ -567,7 +567,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           .from('user_profiles')
           .update(supabasePayload)
           .eq('user_id', user.id)
-          .select()
+          .select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit, created_at, updated_at') // Select known columns
           .single();
       }
       
