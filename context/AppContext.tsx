@@ -541,7 +541,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         throw checkError;
       }
       
-      let result;
+      let dataToUpdateStateWith;
       
       if (!existingProfile) {
         // Profile doesn't exist, create a new one with defaults plus provided data
@@ -553,39 +553,35 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         };
         
         console.log("[AppContext] No existing profile found, creating new one:", newProfileData);
-        result = await supabase
+        // Insert without selecting data back immediately
+        const { error: insertError } = await supabase
           .from('user_profiles')
-          .insert(newProfileData)
-          .select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit') // Select known columns, removed timestamps
-          .single();
+          .insert(newProfileData);
+        
+        if (insertError) throw insertError;
+        dataToUpdateStateWith = newProfileData; // Use the data we sent for state update
+          
       } else {
         // Profile exists, just update it
         console.log("[AppContext] Updating existing profile");
-        result = await supabase
+        // Update without selecting data back immediately
+        const { error: updateError } = await supabase
           .from('user_profiles')
           .update(supabasePayload)
-          .eq('user_id', user.id)
-          .select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit') // Select known columns, removed timestamps
-          .single();
+          .eq('user_id', user.id);
+          
+        if (updateError) throw updateError;
+        dataToUpdateStateWith = { ...userProfile, ...supabasePayload }; // Merge existing profile with updates
       }
       
-      const { data, error } = result;
+      // No need to process returned data as we didn't select it
       
-      if (error) {
-        throw error;
-      }
-      
-      if (data) {
-        console.log("[AppContext] Profile updated/created successfully in Supabase.");
-        // Map the returned snake_case data to camelCase for the app state
-        const dbProfile = data as any;
-        
-        // Log the actual fields returned by the database for debugging
-        console.log("[AppContext] Database profile data:", dbProfile);
-        
-        // Only include fields that actually exist in the database
+      if (dataToUpdateStateWith) {
+        console.log("[AppContext] Profile updated/created successfully in Supabase. Updating local state...");
+        // Map the snake_case data we have to camelCase for the app state
+        const dbProfile = dataToUpdateStateWith as any;
         const appProfile: UserProfile = {
-            id: uuidv4(), // Generate client-side ID
+            id: userProfile?.id || uuidv4(), // Keep existing ID or generate new if creating
             user_id: dbProfile.user_id,
             name: dbProfile.name || DEFAULT_USER_PROFILE.name,
             weight: dbProfile.weight || DEFAULT_USER_PROFILE.weight,
