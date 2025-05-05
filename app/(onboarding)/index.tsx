@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
@@ -20,11 +20,10 @@ export default function OnboardingWelcome() {
       </View>
       
       <View style={styles.imageContainer}>
-        <Image 
-          source={require('@/assets/images/onboarding-welcome.png')} 
-          style={styles.image}
-          resizeMode="contain"
-        />
+        <View style={styles.imageReplacement}>
+          <Text style={styles.imageIcon}>🥑</Text>
+          <Text style={styles.welcomeText}>Your Keto Journey Begins</Text>
+        </View>
       </View>
       
       <View style={styles.content}>
@@ -69,9 +68,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginVertical: 20,
   },
-  image: {
+  imageReplacement: {
     width: '90%',
-    height: '90%',
+    height: '70%',
+    backgroundColor: '#F1F8E9',
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E8F5E9',
+    padding: 20,
+  },
+  imageIcon: {
+    fontSize: 80,
+    marginBottom: 20,
+  },
+  welcomeText: {
+    fontSize: 22,
+    fontFamily: 'Montserrat-SemiBold',
+    color: '#2E7D32',
+    textAlign: 'center',
   },
   content: {
     alignItems: 'center',
