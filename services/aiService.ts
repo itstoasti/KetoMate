@@ -91,7 +91,9 @@ export const getAnswerToQuestion = async (question: string): Promise<string> => 
     if (error) throw error;
     if (data.error) throw new Error(data.error);
 
-    return data.response || 'Unable to answer your question.';
+    // Fix: Extract content from the ChatCompletion response structure
+    const content = data?.choices?.[0]?.message?.content;
+    return content || 'Unable to answer your question.';
   } catch (error) {
     console.error('Error getting answer from AI Function:', error);
     // Removed mock fallback

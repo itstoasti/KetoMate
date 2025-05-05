@@ -150,196 +150,171 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (!userId) {
       console.log("[AppContext] loadData called without userId. Resetting state.");
       resetStateToDefaults();
-      setIsLoading(false);
+      // No need to set isLoading false here, resetStateToDefaults does it.
       return;
     }
     
-    console.log(`[AppContext] Loading data for user: ${userId}...`);
+    console.log(`[AppContext] loadData - START for user: ${userId}`); // Log start
     setIsLoading(true); 
-    let loadedProfile: UserProfile | null = null;
-    try {
-      console.log(`[AppContext] Proceeding with load for user: ${userId}`);
+    let loadedProfile: UserProfile | null = null; // Define loadedProfile earlier
+    let appMeals: Meal[] = []; // Define appMeals earlier
+    let appProfile: UserProfile | null = null; // Define appProfile earlier
 
+    try {
+      console.log(`[AppContext] loadData - Proceeding with fetch for user: ${userId}`);
+
+      console.log("[AppContext] loadData - Before Promise.all"); // Log before Promise.all
       const [profileResult, mealsResult, weightResult, favoritesResult] = await Promise.all([
         supabase.from('user_profiles').select('*').eq('user_id', userId).single(),
         supabase.from('meals').select('*').eq('user_id', userId),
         supabase.from('weight_history')
-            .select('id, user_id, entry_date, weight_kg')
+            .select('id, user_id, entry_date, weight_kg') // Corrected select columns
             .eq('user_id', userId)
             .order('entry_date', { ascending: false }),
-        supabase.from('favorite_foods').select('food_data').eq('user_id', userId)
+        supabase.from('favorite_foods').select('food_data').eq('user_id', userId) // Assuming 'food_data' is the correct column
       ]);
+      console.log("[AppContext] loadData - After Promise.all"); // Log after Promise.all
 
-      // --- Initialize Local State ---
-      setFoods([]); // Not currently persisted
-      setMeals([]); // Will be set below
-      setConversations([]); // Not currently persisted
-      setWeightHistory([]); // Will be set below
-      setFavoriteFoods([]); // <-- Initialize favorites state
-      setTodayMacros(DEFAULT_DAILY_MACROS); // Will be recalculated below
-      setUserProfile(null); // Will be set below
-      let appMeals: Meal[] = []; // Temporary variable to hold fetched meals
+      // Log results individually (optional but helpful)
+      console.log("[AppContext] loadData - Profile Result:", profileResult.status, profileResult.error ? profileResult.error.message : `Data: ${!!profileResult.data}`);
+      console.log("[AppContext] loadData - Meals Result:", mealsResult.status, mealsResult.error ? mealsResult.error.message : `Data Count: ${mealsResult.data?.length ?? 0}`);
+      console.log("[AppContext] loadData - Weight Result:", weightResult.status, weightResult.error ? weightResult.error.message : `Data Count: ${weightResult.data?.length ?? 0}`);
+      console.log("[AppContext] loadData - Favorites Result:", favoritesResult.status, favoritesResult.error ? favoritesResult.error.message : `Data Count: ${favoritesResult.data?.length ?? 0}`);
 
-      // --- Process Fetched Data ---
+
+      // --- Initialize Local State (can be kept here or moved) ---
+      setFoods([]);
+      setMeals([]);
+      setConversations([]);
+      setWeightHistory([]);
+      setFavoriteFoods([]);
+      setTodayMacros(DEFAULT_DAILY_MACROS);
+      setUserProfile(null);
+      appMeals = []; // Reset temporary variable
+      appProfile = null; // Reset temporary variable
+
+      console.log("[AppContext] loadData - Start processing fetched data...");
+
+      // --- Process Profile ---
       try {
-        // Map meal_type from DB to type for the app state
+         if (profileResult.error && profileResult.status !== 406) { // 406 means no rows found, which is okay if we create a default one
+            console.error("[AppContext] loadData - Error fetching profile:", profileResult.error);
+            // Handle error appropriately, maybe show an alert or use defaults
+         } else if (profileResult.data) {
+            console.log("[AppContext] loadData - Processing profile data...");
+            const dbProfile = profileResult.data as any;
+             appProfile = { // Assign to the higher-scoped appProfile
+                id: dbProfile.id,
+                user_id: dbProfile.user_id,
+                name: dbProfile.name,
+                weight: dbProfile.weight,
+                height: dbProfile.height,
+                weightUnit: dbProfile.weight_unit || 'kg', // Provide default
+                heightUnit: dbProfile.height_unit || 'cm', // Provide default
+                goal: dbProfile.goal || 'maintain', // Provide default
+                activityLevel: dbProfile.activity_level || 'moderate', // Provide default
+                dailyMacroLimit: dbProfile.daily_macro_limit || { carbs: 20, protein: 120, fat: 150, calories: 1800 }, // Provide default
+                dailyCalorieLimit: dbProfile.daily_calories_limit || 1800, // Provide default
+                created_at: dbProfile.created_at,
+                updated_at: dbProfile.updated_at,
+            };
+            setUserProfile(appProfile);
+            console.log("[AppContext] loadData - Profile processed and set.");
+            loadedProfile = appProfile; // Also update loadedProfile if needed elsewhere
+         } else {
+             console.warn("[AppContext] loadData - No profile data found for user, creating default.");
+            // Consider creating a default profile if none exists
+             // const defaultProfileData = { ...DEFAULT_USER_PROFILE, user_id: userId, id: uuidv4() }; // Example
+             // const { data: newProfile, error: insertError } = await supabase.from('user_profiles').insert(defaultProfileData).select().single();
+             // if (insertError) { console.error("Error creating default profile", insertError); }
+             // else { setUserProfile(newProfile); appProfile = newProfile; loadedProfile = newProfile;}
+             // For now, let's just set a null or default profile state if creation isn't implemented
+             const defaultProfile: UserProfile = { ...DEFAULT_USER_PROFILE, id: uuidv4(), user_id: userId };
+             setUserProfile(defaultProfile);
+             appProfile = defaultProfile;
+             loadedProfile = defaultProfile;
+
+         }
+      } catch(e) { console.error("[AppContext] loadData - Error processing profile:", e); }
+
+
+      // --- Process Meals ---
+      try {
+        if (mealsResult.error) {
+           console.error("[AppContext] loadData - Error fetching meals:", mealsResult.error);
+        } else {
         const dbMeals = mealsResult.data || [];
-        appMeals = dbMeals.map((dbMeal: any) => ({
-            ...dbMeal,
-            type: dbMeal.meal_type // Map meal_type to type
+            console.log(`[AppContext] loadData - Processing ${dbMeals.length} meals...`);
+             appMeals = dbMeals.map((dbMeal: any) => ({ // Assign to the higher-scoped appMeals
+                id: dbMeal.id,
+                user_id: dbMeal.user_id,
+                name: dbMeal.name,
+                date: dbMeal.date, // Assuming date is stored correctly
+                type: dbMeal.meal_type || 'snack', // Map meal_type to type, provide default
+                foods: dbMeal.foods || [], // Assuming foods is stored correctly, provide default
+                macros: dbMeal.macros || { carbs: 0, protein: 0, fat: 0, calories: 0 }, // Provide default
+                created_at: dbMeal.created_at
         })) as Meal[];
-        // Log fetched meals
-        console.log(`[AppContext] loadData - Fetched Meals Count: ${appMeals.length}`);
-        console.log("[AppContext] loadData - Fetched Meals (sample):", JSON.stringify(appMeals.slice(0, 2), null, 2)); 
-        setMeals(appMeals); // Set meals state with fetched & mapped data
-      } catch (e) { console.error(`[AppContext] Error parsing meals for ${userId}:`, e); }
-      
-      let appWeightHistory: WeightEntry[] = []; // Temporary variable
+            setMeals(appMeals);
+            console.log("[AppContext] loadData - Meals processed and set.");
+        }
+      } catch (e) { console.error(`[AppContext] loadData - Error processing meals for ${userId}:`, e); }
+
+      // --- Process Weight History ---
+      let appWeightHistory: WeightEntry[] = [];
       try {
-        if (weightResult.data) {
-          // Map DB columns (snake_case) to app state (camelCase)
+        if (weightResult.error) {
+            console.error("[AppContext] loadData - Error fetching weight history:", weightResult.error);
+        } else if (weightResult.data) {
+           console.log(`[AppContext] loadData - Processing ${weightResult.data.length} weight entries...`);
           appWeightHistory = weightResult.data.map((dbEntry: any) => ({
               id: dbEntry.id,
               user_id: dbEntry.user_id,
               date: dbEntry.entry_date, // Map entry_date to date
               weight: dbEntry.weight_kg, // Map weight_kg to weight
-              unit: loadedProfile?.weightUnit || 'kg' // Assign unit based on profile (use loadedProfile here)
+               unit: appProfile?.weightUnit || 'kg' // Use loaded profile
           })) as WeightEntry[];
           
-          // Log fetched weight history
-          console.log(`[AppContext] loadData - Fetched Weight History Count: ${appWeightHistory.length}`);
-          console.log("[AppContext] loadData - Fetched Weight History (sample):", JSON.stringify(appWeightHistory.slice(0, 2), null, 2)); 
-          
-          // Sort by date (already mapped to 'date')
-          setWeightHistory(appWeightHistory.sort((a, b) => compareDesc(new Date(a.date), new Date(b.date))));
-          console.log(`[AppContext] Successfully parsed and loaded weight history for ${userId}`);
+           setWeightHistory(appWeightHistory.sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))); // Use parseISO for correct date sorting
+           console.log("[AppContext] loadData - Weight history processed and set.");
         }
-      } catch (e) { console.error(`[AppContext] Error parsing weight history for ${userId}:`, e); }
+      } catch (e) { console.error(`[AppContext] loadData - Error processing weight history for ${userId}:`, e); }
       
       // --- Process Favorites --- 
       try {
           if (favoritesResult.error) {
-              console.error("[AppContext] Error fetching favorites:", favoritesResult.error);
+              console.error("[AppContext] loadData - Error fetching favorites:", favoritesResult.error);
           } else if (favoritesResult.data) {
-              // Extract the food_data object from each row
-              const favs = favoritesResult.data.map(fav => fav.food_data as Food);
+               console.log(`[AppContext] loadData - Processing ${favoritesResult.data.length} favorite foods...`);
+              const favs = favoritesResult.data.map(fav => fav.food_data as Food); // Assuming food_data is the correct structure
               setFavoriteFoods(favs);
-              console.log(`[AppContext] Successfully loaded ${favs.length} favorite foods for user ${userId}`);
+              console.log(`[AppContext] loadData - Favorites processed and set.`);
           }
-      } catch (e) { console.error(`[AppContext] Error parsing favorites for ${userId}:`, e); }
-      // --- End Process Favorites ---
-      
-      try {
-        if (profileResult.data) {
-          // Map snake_case from DB to camelCase for app state
-          const dbProfile = profileResult.data as any;
-          const appProfile: UserProfile = {
-            ...dbProfile,
-            activityLevel: dbProfile.activity_level, // Map activity_level to activityLevel
-            dailyMacroLimit: dbProfile.daily_macro_limit, // Map daily_macro_limit to dailyMacroLimit
-            dailyCalorieLimit: dbProfile.daily_calories_limit, // Map daily_calories_limit to dailyCalorieLimit
-            heightUnit: dbProfile.height_unit, // Map height_unit to heightUnit
-            weightUnit: dbProfile.weight_unit, // Map weight_unit to weightUnit
-          };
-          // Optionally delete the snake_case keys if desired
-          // delete appProfile.activity_level;
-          // delete appProfile.daily_macro_limit;
-          // delete appProfile.daily_calories_limit;
-          // delete appProfile.height_unit;
-          // delete appProfile.weight_unit;
-          
-          loadedProfile = appProfile;
-          setUserProfile(loadedProfile); // Set profile state with mapped data
-          console.log(`[AppContext] Successfully parsed and loaded profile for ${userId}`);
+      } catch (e) { console.error(`[AppContext] loadData - Error processing favorites for ${userId}:`, e); }
+
+      // --- Calculate Macros ---
+      console.log("[AppContext] loadData - Calculating today's macros...");
+      // Ensure appProfile is not null before passing it
+      if(appProfile) {
+          calculateAndSetTodayMacros(appMeals, appProfile);
+          console.log("[AppContext] loadData - Today's macros calculated.");
         } else {
-          console.log(`[AppContext] No profile found for user ${userId}. Attempting minimal profile creation.`);
-          const minimalProfileData = { user_id: userId };
-          const { data: minimalInsertData, error: minimalInsertError } = await supabase
-              .from('user_profiles')
-              .insert(minimalProfileData)
-              .select()
-              .single();
-
-          if (minimalInsertError) {
-              console.error('[AppContext] Error creating MINIMAL profile:', JSON.stringify(minimalInsertError, null, 2));
-              Alert.alert("Error", "Could not initialize your user profile (minimal insert failed).");
-              // Maybe set isLoading false here? Or handle error differently
-              setIsLoading(false); 
-              return;
-          } else if (minimalInsertData) {
-             console.log('[AppContext] Minimal profile created successfully. Now attempting to update with full defaults.');
-             // Set the minimally created profile first (no mapping needed here as it just has user_id)
-             loadedProfile = minimalInsertData as UserProfile; 
-          setUserProfile(loadedProfile);
-
-             // Prepare the default update payload with snake_case keys
-             const defaultProfileUpdate = {
-                 name: DEFAULT_USER_PROFILE.name,
-                 weight: DEFAULT_USER_PROFILE.weight,
-                 height: DEFAULT_USER_PROFILE.height,
-                 weight_unit: DEFAULT_USER_PROFILE.weightUnit,
-                 height_unit: DEFAULT_USER_PROFILE.heightUnit,
-                 goal: DEFAULT_USER_PROFILE.goal,
-                 activity_level: DEFAULT_USER_PROFILE.activityLevel,
-                 daily_macro_limit: DEFAULT_USER_PROFILE.dailyMacroLimit,
-                 daily_calories_limit: DEFAULT_USER_PROFILE.dailyCalorieLimit
-             };
-             // Note: DEFAULT_USER_PROFILE uses camelCase, so we map here for the DB update
-
-             const { data: updatedProfileData, error: updateError } = await supabase
-                .from('user_profiles')
-                .update(defaultProfileUpdate)
-                .eq('user_id', userId)
-                .select()
-                .single();
-
-             if (updateError) {
-                 console.error('[AppContext] Error updating profile with defaults after minimal insert:', JSON.stringify(updateError, null, 2));
-                 Alert.alert("Warning", "Could not fully set default profile values. Some defaults might be missing.");
-                 // Keep loadedProfile as the minimal one in case of update error
-             } else if (updatedProfileData) {
-                 console.log('[AppContext] Profile successfully updated with full defaults.');
-                 // Map the fully updated profile back from snake_case (DB) to camelCase (App)
-                 const dbUpdatedProfile = updatedProfileData as any;
-                 const appUpdatedProfile: UserProfile = {
-                     ...dbUpdatedProfile,
-                     activityLevel: dbUpdatedProfile.activity_level,
-                     dailyMacroLimit: dbUpdatedProfile.daily_macro_limit,
-                     dailyCalorieLimit: dbUpdatedProfile.daily_calories_limit,
-                     heightUnit: dbUpdatedProfile.height_unit, // Map height_unit
-                     weightUnit: dbUpdatedProfile.weight_unit, // Map weight_unit
-                 };
-                 loadedProfile = appUpdatedProfile; // Update loadedProfile with full mapped data
-                 setUserProfile(loadedProfile); // Update state again with full mapped data
-            } else {
-                 console.warn('[AppContext] Profile update seemed successful but no data returned.');
-                 // Keep loadedProfile as the minimal one
-             }
-          }
-        }
-      } catch (e) {
-          console.error(`[AppContext] Error during profile loading/creation for ${userId}:`, e);
-          Alert.alert("Profile Error", "An error occurred while setting up your profile.");
-          // Consider setting isLoading false here too
-           setIsLoading(false);
-           return;
+           console.warn("[AppContext] loadData - Skipping macro calculation because profile is null.");
+           // Set default macros if profile wasn't loaded/created
+           setTodayMacros(DEFAULT_DAILY_MACROS);
       }
 
-      // --- Calculate Macros *AFTER* setting meals and profile ---
-      const finalTodayMacros = calculateMacrosForDay(appMeals, format(new Date(), 'yyyy-MM-dd'), loadedProfile);
-      setTodayMacros(finalTodayMacros); // Set the final calculated macros
 
-      // Log the final calculated todayMacros state RIGHT BEFORE setting loading to false
-      console.log('[AppContext] Final todayMacros state set AFTER calculation:', JSON.stringify(finalTodayMacros, null, 2));
+      console.log(`[AppContext] loadData - Data processing complete for user: ${userId}`);
 
-      setIsLoading(false);
-      console.log(`[AppContext] Data loading finished for user ${userId}.`);
-      // console.log("[AppContext] Initialization complete. Setting loading false."); // Redundant log
-      setJustLoaded(true);
     } catch (error) {
-      console.error(`[AppContext] General error loading data for user ${userId}:`, error);
-      setJustLoaded(false);
-      setIsLoading(false); // Ensure loading is false on general error
+      console.error(`[AppContext] loadData - Error during data fetching or processing for user ${userId}:`, error);
+      // Optionally reset state or set specific error state here
+      // resetStateToDefaults(); // Consider if resetting is the desired behavior on error
+    } finally {
+      console.log(`[AppContext] loadData - FINALLY block reached for user: ${userId}. Setting isLoading to false.`); // Log finally block
+      setIsLoading(false);
+       console.log(`[AppContext] loadData - END for user: ${userId}, isLoading is now false.`); // Log end
     }
   };
 
@@ -853,14 +828,28 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const signOut = async () => {
     console.log("[AppContext] Initiating sign out...");
     setIsSigningOut(true);
-
+    setIsLoading(true); // Indicate loading during sign out
+    try {
     const { error } = await supabase.auth.signOut();
     if (error) {
-      console.error("Error signing out from Supabase:", error);
-      Alert.alert("Sign Out Error", error.message);
-      setIsSigningOut(false);
+            console.error("Error signing out:", error);
+            Alert.alert("Error", `Sign out failed: ${error.message}`);
+             setIsSigningOut(false); // Reset flag on error
+             setIsLoading(false); // Reset loading on error
     } else {
-      console.log("[AppContext] Supabase sign out successful. State reset will be handled by auth listener.");
+            console.log("[AppContext] Supabase signOut successful. Auth listener should handle state reset.");
+             // Don't manually reset state here - let the onAuthStateChange listener handle it
+             // resetStateToDefaults(); // REMOVED - let listener handle it
+             // setSession(null); // REMOVED
+             // setUser(null); // REMOVED
+             // setIsLoading(false); // REMOVED - Listener will set this after reset
+             // isSigningOut will be reset by the listener when SIGNED_OUT is processed
+        }
+    } catch (e: any) {
+        console.error("Unexpected error during sign out:", e);
+        Alert.alert("Error", `An unexpected error occurred during sign out: ${e.message}`);
+         setIsSigningOut(false); // Reset flag on unexpected error
+         setIsLoading(false); // Reset loading on unexpected error
     }
   };
 

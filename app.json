@@ -1,29 +1,29 @@
 {
   "expo": {
-    "name": "bolt-expo-nativewind",
-    "slug": "bolt-expo-nativewind",
+    "name": "KetoMate",
+    "slug": "ketomate",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./ketomate-icons/android/playstore-icon.png",
-    "scheme": "myapp",
+    "scheme": "ketomate",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "linking": {
       "enabled": true,
       "prefixes": [
-        "myapp"
+        "ketomate"
       ],
       "config": {
         "screens": {
           "(tabs)": {
-             "path": "/",
-             "screens": {
-               "index": "",
-               "track": "track",
-               "history": "history",
-               "assistant": "assistant",
-               "profile": "profile"
-             }
+            "path": "/",
+            "screens": {
+              "index": "",
+              "track": "track",
+              "history": "history",
+              "assistant": "assistant",
+              "profile": "profile"
+            }
           },
           "(auth)/login": "login",
           "+not-found": "*"
@@ -51,11 +51,17 @@
         "origin": false
       },
       "eas": {
-        "projectId": "53317242-4272-4c6d-b0cc-0be5fc5ec3ee"
+        "projectId": "0f746349-c8ac-427c-a8b0-fb90438f8d99"
       }
     },
     "android": {
-      "package": "com.deanfieldz.boltexponativewind"
-    }
+      "package": "com.deanfieldz.ketomate",
+      "adaptiveIcon": {
+        "foregroundImage": "./ketomate-icons/android/playstore-icon.png",
+        "backgroundColor": "#FFFFFF"
+      },
+      "icon": "./ketomate-icons/android/playstore-icon.png"
+    },
+    "owner": "deanfieldz"
   }
 }
