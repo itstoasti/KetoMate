@@ -165,7 +165,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
       console.log("[AppContext] loadData - Before Promise.all"); // Log before Promise.all
       const [profileResult, mealsResult, weightResult, favoritesResult] = await Promise.all([
-        supabase.from('user_profiles').select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit, created_at, updated_at').eq('user_id', userId).single(),
+        supabase.from('user_profiles').select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit').eq('user_id', userId).single(),
         supabase.from('meals').select('*').eq('user_id', userId),
         supabase.from('weight_history')
             .select('id, user_id, entry_date, weight_kg') // Corrected select columns
@@ -204,7 +204,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             console.log("[AppContext] loadData - Processing profile data...");
             const dbProfile = profileResult.data as any;
              appProfile = { // Assign to the higher-scoped appProfile
-                id: dbProfile.id,
+                id: uuidv4(), // Generate client-side ID
                 user_id: dbProfile.user_id,
                 name: dbProfile.name,
                 weight: dbProfile.weight,
@@ -215,8 +215,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
                 activityLevel: dbProfile.activity_level || 'moderate', // Provide default
                 dailyMacroLimit: dbProfile.daily_macro_limit || { carbs: 20, protein: 120, fat: 150, calories: 1800 }, // Provide default
                 dailyCalorieLimit: dbProfile.daily_calories_limit || 1800, // Provide default
-                created_at: dbProfile.created_at,
-                updated_at: dbProfile.updated_at,
             };
             setUserProfile(appProfile);
             console.log("[AppContext] loadData - Profile processed and set.");
@@ -558,7 +556,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         result = await supabase
           .from('user_profiles')
           .insert(newProfileData)
-          .select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit, created_at, updated_at') // Select known columns
+          .select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit') // Select known columns, removed timestamps
           .single();
       } else {
         // Profile exists, just update it
@@ -567,7 +565,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           .from('user_profiles')
           .update(supabasePayload)
           .eq('user_id', user.id)
-          .select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit, created_at, updated_at') // Select known columns
+          .select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit') // Select known columns, removed timestamps
           .single();
       }
       
@@ -587,7 +585,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         
         // Only include fields that actually exist in the database
         const appProfile: UserProfile = {
-            id: dbProfile.id || uuidv4(), // Use a generated ID if not provided by DB
+            id: uuidv4(), // Generate client-side ID
             user_id: dbProfile.user_id,
             name: dbProfile.name || DEFAULT_USER_PROFILE.name,
             weight: dbProfile.weight || DEFAULT_USER_PROFILE.weight,
