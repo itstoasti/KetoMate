@@ -553,7 +553,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         };
         
         console.log("[AppContext] No existing profile found, creating new one:", newProfileData);
-        // Insert without selecting data back immediately
+        // Insert without selecting data back and without .single()
         const { error: insertError } = await supabase
           .from('user_profiles')
           .insert(newProfileData);
@@ -564,14 +564,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       } else {
         // Profile exists, just update it
         console.log("[AppContext] Updating existing profile");
-        // Update without selecting data back immediately
+        // Update without selecting data back and without .single()
         const { error: updateError } = await supabase
           .from('user_profiles')
           .update(supabasePayload)
           .eq('user_id', user.id);
           
         if (updateError) throw updateError;
-        dataToUpdateStateWith = { ...userProfile, ...supabasePayload }; // Merge existing profile with updates
+        // Use the userProfile from state and merge the updates we sent
+        dataToUpdateStateWith = { ...userProfile, ...supabasePayload }; 
       }
       
       // No need to process returned data as we didn't select it
