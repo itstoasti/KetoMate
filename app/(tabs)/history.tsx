@@ -167,7 +167,7 @@ export default function HistoryScreen() {
   };
 
   // Determine the display unit based on profile
-  const displayWeightUnit = userProfile?.weightUnit || 'kg';
+  const displayWeightUnit = userProfile?.weightUnit || 'lb';
 
   // --- New Weight Chart Logic ---
   const getWeightChartData = () => {

@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Alert,
 import { useAppContext } from '@/context/AppContext';
 import { UserProfile } from '@/types';
 import { Save, CircleUser as UserCircle, Settings, CornerUpRight, Info, Trash2, LogOut } from 'lucide-react-native';
+import { useRouter } from 'expo-router';
 
 // --- Weight Conversion Helpers ---
 const KG_TO_LB = 2.20462;
@@ -36,14 +37,15 @@ const ftInToCm = (ft: number, inches: number): number => {
 
 export default function ProfileScreen() {
   const { userProfile, updateUserProfile, clearData, signOut } = useAppContext();
+  const router = useRouter();
   
   const [name, setName] = useState(userProfile?.name || '');
   const [weight, setWeight] = useState('');
-  const [weightUnit, setWeightUnit] = useState<'kg' | 'lb'>(userProfile?.weightUnit || 'kg');
+  const [weightUnit, setWeightUnit] = useState<'kg' | 'lb'>(userProfile?.weightUnit || 'lb');
   const [heightCm, setHeightCm] = useState('');
   const [heightFt, setHeightFt] = useState('');
   const [heightIn, setHeightIn] = useState('');
-  const [heightUnit, setHeightUnit] = useState<'cm' | 'ft'>(userProfile?.heightUnit || 'cm');
+  const [heightUnit, setHeightUnit] = useState<'cm' | 'ft'>(userProfile?.heightUnit || 'ft');
   const [goal, setGoal] = useState<'weight_loss' | 'maintenance' | 'muscle_gain'>(userProfile?.goal || 'weight_loss');
   const [activityLevel, setActivityLevel] = useState<'sedentary' | 'light' | 'moderate' | 'active' | 'very_active'>(userProfile?.activityLevel || 'moderate');
   const [isEditingMacros, setIsEditingMacros] = useState(false);
@@ -51,6 +53,15 @@ export default function ProfileScreen() {
   const [customProtein, setCustomProtein] = useState(userProfile?.dailyMacroLimit?.protein?.toString() || '120');
   const [customFat, setCustomFat] = useState(userProfile?.dailyMacroLimit?.fat?.toString() || '150');
   const [customCalories, setCustomCalories] = useState(userProfile?.dailyMacroLimit?.calories?.toString() || '1800');
+  
+  // Track if profile has been loaded
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  
+  // Effect to initialize and load profile data as soon as component mounts
+  useEffect(() => {
+    console.log("Profile screen mounted");
+    setProfileLoaded(false);
+  }, []);
   
   // --- Synchronized Height Update Logic ---
   const updateHeightStates = useCallback((value: number, sourceUnit: 'cm' | 'ft/in') => {
@@ -76,34 +87,73 @@ export default function ProfileScreen() {
   // Effect to load initial profile data and handle unit conversions
   useEffect(() => {
     if (userProfile) {
+      console.log("Loading user profile data:", JSON.stringify(userProfile, null, 2));
+      
+      // Set the profile as loaded
+      setProfileLoaded(true);
+      
+      // Basic info
       setName(userProfile.name || '');
-      const profileWeightUnit = userProfile.weightUnit || 'kg';
-      const profileHeightUnit = userProfile.heightUnit || 'cm';
+      
+      // Units - Use the stored unit preferences or default to lb/ft if not specified
+      const profileWeightUnit = userProfile.weightUnit || 'lb';
+      const profileHeightUnit = userProfile.heightUnit || 'ft';
       setWeightUnit(profileWeightUnit);
       setHeightUnit(profileHeightUnit);
+      
+      // Goals and activity
       setGoal(userProfile.goal || 'weight_loss');
       setActivityLevel(userProfile.activityLevel || 'moderate');
       
-      // Weight handling: Convert the stored KG value to the preferred unit for display
-      const weightKg = userProfile.weight;
+      // Weight handling with validation
+      let weightKg = userProfile.weight || 70; // Default weight in kg if missing
+      if (isNaN(weightKg) || weightKg <= 0) weightKg = 70;
+      
+      // Convert only if we need to display in pounds
       const displayWeight = profileWeightUnit === 'lb' ? kgToLb(weightKg) : weightKg;
       setWeight(roundToDecimal(displayWeight, 1).toString());
       
-      // Height handling - always populate all based on stored cm value
-      const initialCm = userProfile.height;
-      setHeightCm(Math.round(initialCm).toString());
-      const { ft, in: inches } = cmToFtIn(initialCm);
-      setHeightFt(ft.toString());
-      setHeightIn(inches.toString());
+      // Height handling with validation
+      let initialCm = userProfile.height || 170; // Default height in cm if missing
+      if (isNaN(initialCm) || initialCm <= 0) initialCm = 170;
       
-      // Load macros
-      setCustomCarbs(userProfile.dailyMacroLimit?.carbs?.toString() || '20');
-      setCustomProtein(userProfile.dailyMacroLimit?.protein?.toString() || '120');
-      setCustomFat(userProfile.dailyMacroLimit?.fat?.toString() || '150');
-      setCustomCalories(userProfile.dailyMacroLimit?.calories?.toString() || '1800');
+      // Convert cm to ft/in for easier reference later
+      const ftInHeight = cmToFtIn(initialCm);
+      const ftValue = ftInHeight.ft;
+      const inValue = ftInHeight.in;
       
+      // Handle height based on the stored unit preference
+      if (profileHeightUnit === 'ft') {
+        // Convert height from cm to feet/inches for display
+        setHeightFt(ftValue.toString());
+        setHeightIn(inValue.toString());
+        // Keep the cm value in case it's needed
+        setHeightCm(Math.round(initialCm).toString());
+      } else {
+        // Just use the cm value directly
+        setHeightCm(Math.round(initialCm).toString());
+        // Still calculate ft/in in case user switches units
+        setHeightFt(ftValue.toString());
+        setHeightIn(inValue.toString());
+      }
+      
+      // Load macros with validation
+      const carbs = userProfile.dailyMacroLimit?.carbs || 20;
+      const protein = userProfile.dailyMacroLimit?.protein || 120;
+      const fat = userProfile.dailyMacroLimit?.fat || 150;
+      const calories = userProfile.dailyMacroLimit?.calories || 1800;
+      
+      setCustomCarbs(isNaN(carbs) ? '20' : carbs.toString());
+      setCustomProtein(isNaN(protein) ? '120' : protein.toString());
+      setCustomFat(isNaN(fat) ? '150' : fat.toString());
+      setCustomCalories(isNaN(calories) ? '1800' : calories.toString());
+      
+      console.log("Profile data loaded to UI: weight=", displayWeight, weightUnit, "height=", 
+        profileHeightUnit === 'ft' ? `${ftValue}ft ${inValue}in` : `${initialCm} cm`);
+    } else {
+      console.log("No user profile data available to load");
     }
-  }, [userProfile]); // Only run when userProfile loads initially
+  }, [userProfile]); // Only run when userProfile changes
   
   // Effect to handle manual unit changes (weight)
   useEffect(() => {
@@ -269,7 +319,11 @@ export default function ProfileScreen() {
         {
           text: "Sign Out",
           style: "destructive",
-          onPress: () => signOut(),
+          onPress: async () => {
+            await signOut();
+            // Explicitly navigate to login screen after signing out
+            router.replace('/(auth)/login');
+          },
         },
       ]
     );

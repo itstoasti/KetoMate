@@ -7,12 +7,12 @@ import { Picker } from '@react-native-picker/picker';
 
 export default function GoalsSetup() {
   const router = useRouter();
-  const { updateUserProfile } = useAppContext();
+  const { updateUserProfile, user, userProfile } = useAppContext();
   
-  const [goal, setGoal] = useState('weight_loss');
-  const [activityLevel, setActivityLevel] = useState('moderate');
+  const [goal, setGoal] = useState<'weight_loss' | 'maintenance' | 'muscle_gain'>('weight_loss');
+  const [activityLevel, setActivityLevel] = useState<'sedentary' | 'light' | 'moderate' | 'active' | 'very_active'>('moderate');
   const [goalWeight, setGoalWeight] = useState('');
-  const [weightUnit, setWeightUnit] = useState('kg');
+  const [weightUnit, setWeightUnit] = useState<'kg' | 'lb'>('lb');
   const [isLoading, setIsLoading] = useState(false);
   
   const goals = [
@@ -33,14 +33,66 @@ export default function GoalsSetup() {
     setIsLoading(true);
     
     try {
-      // Update user profile with goal information
-      await updateUserProfile({
-        goal: goal as 'weight_loss' | 'maintenance' | 'muscle_gain',
-        activityLevel: activityLevel as 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active',
-      });
+      console.log(`Saving goals: goal=${goal}, activityLevel=${activityLevel}`);
       
-      // Navigate to the main app
-      router.replace('/');
+      // Only update the goal-related fields, don't overwrite other profile data
+      // First get the current profile to preserve existing data
+      const currentProfile = userProfile || {};
+      
+      // Process goal weight if provided (for weight_loss goal)
+      let goalWeightInKg;
+      if (goal === 'weight_loss' && goalWeight) {
+        const goalWeightNum = parseFloat(goalWeight);
+        if (!isNaN(goalWeightNum)) {
+          // Convert to kg if in lb for storage
+          goalWeightInKg = weightUnit === 'lb' ? goalWeightNum * 0.453592 : goalWeightNum;
+        }
+      }
+      
+      // Create a sanitized copy to prevent double-conversion issues
+      const profileData = {
+        // Preserve existing profile data exactly as is (without any conversions)
+        name: currentProfile.name,
+        weight: currentProfile.weight,
+        height: currentProfile.height,
+        weightUnit: currentProfile.weightUnit,
+        heightUnit: currentProfile.heightUnit,
+        
+        // Add the new goal information
+        goal: goal as 'weight_loss' | 'maintenance' | 'muscle_gain',
+        // Use activityLevel (camelCase) for the profile, which will be mapped to activity_level (snake_case) in the database
+        activityLevel: activityLevel as 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active',
+        // Add goal weight if available
+        ...(goalWeightInKg ? { goalWeight: goalWeightInKg } : {}),
+        // Set default macros based on the selected goal
+        dailyMacroLimit: {
+          carbs: 20, // Low carb for keto
+          protein: goal === 'muscle_gain' ? 150 : 120,
+          fat: 150,
+          calories: goal === 'weight_loss' ? 1600 : (goal === 'maintenance' ? 1800 : 2000)
+        },
+        dailyCalorieLimit: goal === 'weight_loss' ? 1600 : (goal === 'maintenance' ? 1800 : 2000)
+      };
+      
+      // Log the exact data we're sending to update
+      console.log("Preserving profile data:", JSON.stringify({
+        name: profileData.name,
+        weight: profileData.weight,
+        height: profileData.height,
+        weightUnit: profileData.weightUnit,
+        heightUnit: profileData.heightUnit
+      }));
+      
+      // Update profile with the sanitized data
+      await updateUserProfile(profileData);
+      
+      // Important: Wait for profile to be saved properly
+      console.log("Profile updated, waiting before navigation...");
+      // Wait longer to ensure data is fully saved and synced
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      console.log("Navigating to tabs after onboarding");
+      router.replace('/(tabs)');
     } catch (error) {
       console.error('Error saving goals data:', error);
       alert('There was an error saving your goals. Please try again.');
@@ -100,11 +152,11 @@ export default function GoalsSetup() {
               <View style={styles.unitSelector}>
                 <Picker
                   selectedValue={weightUnit}
-                  onValueChange={(itemValue) => setWeightUnit(itemValue)}
+                  onValueChange={(itemValue) => setWeightUnit(itemValue as 'kg' | 'lb')}
                   style={styles.unitPicker}
                 >
-                  <Picker.Item label="kg" value="kg" />
                   <Picker.Item label="lb" value="lb" />
+                  <Picker.Item label="kg" value="kg" />
                 </Picker>
               </View>
             </View>

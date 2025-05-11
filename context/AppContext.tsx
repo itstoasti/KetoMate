@@ -39,8 +39,8 @@ const DEFAULT_USER_PROFILE: Omit<UserProfile, 'id'> = {
   name: 'User',
   weight: 70,
   height: 170,
-  weightUnit: 'kg',
-  heightUnit: 'cm',
+  weightUnit: 'lb',
+  heightUnit: 'ft',
   goal: 'weight_loss',
   activityLevel: 'moderate',
   dailyMacroLimit: {
@@ -209,8 +209,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
                 name: dbProfile.name,
                 weight: dbProfile.weight,
                 height: dbProfile.height,
-                weightUnit: dbProfile.weight_unit || 'kg', // Provide default
-                heightUnit: dbProfile.height_unit || 'cm', // Provide default
+                weightUnit: dbProfile.weight_unit || 'lb', // Default to lb
+                heightUnit: dbProfile.height_unit || 'ft', // Default to ft
                 goal: dbProfile.goal || 'maintain', // Provide default
                 activityLevel: dbProfile.activity_level || 'moderate', // Provide default
                 dailyMacroLimit: dbProfile.daily_macro_limit || { carbs: 20, protein: 120, fat: 150, calories: 1800 }, // Provide default
@@ -274,7 +274,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
               user_id: dbEntry.user_id,
               date: dbEntry.entry_date, // Map entry_date to date
               weight: dbEntry.weight_kg, // Map weight_kg to weight
-               unit: appProfile?.weightUnit || 'kg' // Use loaded profile
+               unit: appProfile?.weightUnit || 'lb' // Use loaded profile
           })) as WeightEntry[];
           
            setWeightHistory(appWeightHistory.sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))); // Use parseISO for correct date sorting
@@ -464,7 +464,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             user_id: savedDbEntry.user_id,
             date: savedDbEntry.entry_date, // Map entry_date back to date
             weight: savedDbEntry.weight_kg, // Map weight_kg back to weight
-            unit: userProfile?.weightUnit || 'kg' // Assign unit based on profile
+            unit: userProfile?.weightUnit || 'lb' // Assign unit based on profile
         };
 
         const updatedHistory = [savedAppEntry, ...weightHistory]
@@ -490,33 +490,27 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const updateUserProfile = useCallback(async (profileData: Partial<UserProfile>) => {
     if (!user?.id) {
       console.error("[AppContext] Cannot update profile: No user logged in.");
-      Alert.alert("Error", "Authentication error.");
+      Alert.alert("Error", "Authentication error: Please log in again."); 
       return;
     }
 
-    // --- Build Payload Explicitly ---
-    // Start with an empty object
-    const supabasePayload: Record<string, any> = {};
-
-    // Map known fields from app state (profileData) to DB column names (snake_case)
-    // Only include fields that are present in profileData (not undefined)
+    console.log("[AppContext] updateUserProfile called with:", profileData);
     
-    // Fields with matching names
+    // Build payload for Supabase (snake_case)
+    const supabasePayload: any = {};
+    
+    // Map all the camelCase profile properties to snake_case database columns
     if (profileData.name !== undefined) supabasePayload.name = profileData.name;
     if (profileData.weight !== undefined) supabasePayload.weight = profileData.weight;
     if (profileData.height !== undefined) supabasePayload.height = profileData.height;
     if (profileData.goal !== undefined) supabasePayload.goal = profileData.goal;
-
-    // Fields needing case conversion
     if (profileData.activityLevel !== undefined) supabasePayload.activity_level = profileData.activityLevel;
-    if (profileData.heightUnit !== undefined) supabasePayload.height_unit = profileData.heightUnit;
-    if (profileData.weightUnit !== undefined) supabasePayload.weight_unit = profileData.weightUnit;
     if (profileData.dailyMacroLimit !== undefined) supabasePayload.daily_macro_limit = profileData.dailyMacroLimit;
     if (profileData.dailyCalorieLimit !== undefined) supabasePayload.daily_calories_limit = profileData.dailyCalorieLimit;
-
-    // Exclude id and user_id explicitly (though they shouldn't be in profileData usually)
-    delete supabasePayload.id;
-    // Always add user_id to payload to ensure proper record creation/matching
+    if (profileData.heightUnit !== undefined) supabasePayload.height_unit = profileData.heightUnit;
+    if (profileData.weightUnit !== undefined) supabasePayload.weight_unit = profileData.weightUnit;
+    
+    // Add user ID if it's missing
     supabasePayload.user_id = user.id;
     // --- End Build Payload ---
 
@@ -529,13 +523,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     console.log("[AppContext] Attempting to update profile in Supabase with explicit payload:", supabasePayload);
     
     try {
-      // First check if the profile exists
+      // First check if the profile exists - using user_id instead of id
       const { data: existingProfile, error: checkError } = await supabase
-        .from('user_profiles')
-        .select('id')
-        .eq('user_id', user.id)
-        .single();
-        
+      .from('user_profiles')
+        .select('user_id') // Changed from 'id' to 'user_id' since id doesn't exist in the table
+      .eq('user_id', user.id) 
+      .single();
+
       if (checkError && checkError.code !== 'PGRST116') {
         // If it's an error other than "no rows returned", throw it
         throw checkError;
@@ -545,11 +539,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       
       if (!existingProfile) {
         // Profile doesn't exist, create a new one with defaults plus provided data
+        // Need to explicitly convert camelCase to snake_case for all fields here
         const newProfileData = {
-          ...DEFAULT_USER_PROFILE,
-          ...supabasePayload,
+          name: DEFAULT_USER_PROFILE.name,
+          weight: DEFAULT_USER_PROFILE.weight,
+          height: DEFAULT_USER_PROFILE.height,
+          goal: DEFAULT_USER_PROFILE.goal,
+          activity_level: DEFAULT_USER_PROFILE.activityLevel, // Convert camelCase to snake_case
+          daily_macro_limit: DEFAULT_USER_PROFILE.dailyMacroLimit,
+          daily_calories_limit: DEFAULT_USER_PROFILE.dailyCalorieLimit,
+          height_unit: DEFAULT_USER_PROFILE.heightUnit,
+          weight_unit: DEFAULT_USER_PROFILE.weightUnit,
           user_id: user.id,
-          // Don't specify id - let the database generate it
+          ...supabasePayload,
         };
         
         console.log("[AppContext] No existing profile found, creating new one:", newProfileData);
@@ -560,7 +562,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         
         if (insertError) throw insertError;
         dataToUpdateStateWith = newProfileData; // Use the data we sent for state update
-          
       } else {
         // Profile exists, just update it
         console.log("[AppContext] Updating existing profile");
@@ -582,7 +583,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         // Map the snake_case data we have to camelCase for the app state
         const dbProfile = dataToUpdateStateWith as any;
         const appProfile: UserProfile = {
-            id: userProfile?.id || uuidv4(), // Keep existing ID or generate new if creating
+            // Generate a new ID for client-side only since the table doesn't have an ID column
+            id: userProfile?.id || uuidv4(), // This ID is only for client state tracking
             user_id: dbProfile.user_id,
             name: dbProfile.name || DEFAULT_USER_PROFILE.name,
             weight: dbProfile.weight || DEFAULT_USER_PROFILE.weight,
