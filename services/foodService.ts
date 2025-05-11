@@ -232,7 +232,7 @@ const parseAIResponseToFood = (originalQuery: string, text: string, isBarcodeQue
     let calories = 0;
     let parsedSomething = false;
 
-    const lines = text.trim().split('\n');
+    const lines = text.trim().split('\n'); 
     console.log("[parseAIResponseToFood] Lines:", lines);
 
     lines.forEach(line => {
@@ -273,13 +273,13 @@ const parseAIResponseToFood = (originalQuery: string, text: string, isBarcodeQue
     // --- Barcode Not Found Handling ---
     if (isBarcodeQuery && (status as 'Found' | 'NotFound' | 'Unknown') === 'NotFound') {
         console.log("[parseAIResponseToFood] Barcode reported as NotFound by AI.");
-        return { status: 'not_found', query: originalQuery };
+       return { status: 'not_found', query: originalQuery };
     }
     // --- End Barcode Handling ---
 
     // If parsing failed to get any meaningful value other than potentially status
     if (!parsedSomething) {
-        console.warn("[parseAIResponseToFood] Failed to parse any meaningful data from lines.");
+       console.warn("[parseAIResponseToFood] Failed to parse any meaningful data from lines.");
         // Don't return null, return the specific 'Parsing Failed' structure
         // Need to assign a ketoRating even for failure cases
         const defaultRating = getKetoRating(0); // Rating based on 0 net carbs
@@ -437,3 +437,43 @@ If you cannot perform the analysis, return JSON with an error key: {"error": "Co
 };
 
 // --- End Nutrition Label Analysis Service ---
+
+// Function to search shared foods database by name
+export const searchSharedFoods = async (query: string): Promise<Food[]> => {
+  console.log('[foodService] Searching shared foods database for:', query);
+  if (!query || query.trim().length < 2) {
+    console.log('[foodService] Search query too short, returning empty results');
+    return [];
+  }
+  
+  try {
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !sessionData.session) {
+      console.error('[foodService] Error fetching session or no active session:', sessionError);
+      return [];
+    }
+    
+    const { data, error } = await supabase.functions.invoke(
+      `food-search?query=${encodeURIComponent(query.trim())}`,
+      { 
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+
+    if (error) {
+      console.error('[foodService] Error searching shared foods:', error);
+      return [];
+    }
+
+    if (data && data.status === 'success') {
+      console.log(`[foodService] Found ${data.count} shared food items`);
+      return data.items || [];
+    }
+    
+    return [];
+  } catch (error) {
+    console.error('[foodService] Exception searching shared foods:', error);
+    return [];
+  }
+};

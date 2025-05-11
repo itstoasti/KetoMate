@@ -9,13 +9,14 @@ import {
   ActivityIndicator,
   Keyboard,
   Alert,
-  Platform
+  Platform,
+  Switch
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Search as SearchIcon, Scan, X, CheckCircle2, Plus, Check, Info, Star, Heart, PlusCircle } from 'lucide-react-native';
+import { Search as SearchIcon, Scan, X, CheckCircle2, Plus, Check, Info, Star, Heart, PlusCircle, Database } from 'lucide-react-native';
 import { useAppContext } from '../../context/AppContext';
 import { Food, Macro, Meal } from '../../types';
-import { getFoodDetailsFromAI, NotFoundMarker, getNutritionFromImageAI, mockFoodSearch, getKetoRating } from '../../services/foodService';
+import { getFoodDetailsFromAI, NotFoundMarker, getNutritionFromImageAI, mockFoodSearch, getKetoRating, searchSharedFoods } from '../../services/foodService';
 import FoodCard from '../../components/FoodCard';
 import BarcodeScanner from '../../components/BarcodeScanner';
 import FavoritesModal from '../../components/FavoritesModal';
@@ -61,6 +62,11 @@ export default function TrackScreen() {
   const [formPopulatedByAI, setFormPopulatedByAI] = useState(false); 
 
   const [showFavoritesModal, setShowFavoritesModal] = useState(false); // State for modal visibility
+
+  const [searchMode, setSearchMode] = useState<'ai' | 'shared'>('ai');
+  const [sharedFoods, setSharedFoods] = useState<Food[]>([]);
+  const [isLoadingSharedFoods, setIsLoadingSharedFoods] = useState(false);
+  const [showSharedResults, setShowSharedResults] = useState(false);
 
   // Request Camera Permissions on mount (or when needed)
   useEffect(() => {
@@ -149,24 +155,61 @@ export default function TrackScreen() {
     }
   };
   
+  const toggleSearchMode = () => {
+    setSearchMode(prev => prev === 'ai' ? 'shared' : 'ai');
+    // Clear any previous results when toggling
+    setAnalyzedFood(null);
+    setShowManualEntryForm(false);
+    setSharedFoods([]);
+    setShowSharedResults(false);
+  };
+  
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     Keyboard.dismiss();
-    setIsSearching(true);
-    setAnalyzedFood(null);
-    setScanLoading(false);
-    resetManualForm(); // Reset form and flag at start
-
-    try {
-      const result = await getFoodDetailsFromAI(searchQuery.trim());
-      handleApiResponse(result);
-    } catch (error) {
-      console.error("Error fetching food details:", error);
-      Alert.alert("Error", "An error occurred while searching for the food.");
+    
+    if (searchMode === 'ai') {
+      // Existing AI search logic
+      setIsSearching(true);
       setAnalyzedFood(null);
-      setShowManualEntryForm(false); // Ensure form is hidden on error
-    } finally {
-      setIsSearching(false);
+      setScanLoading(false);
+      resetManualForm();
+      setShowSharedResults(false);
+
+      try {
+        const result = await getFoodDetailsFromAI(searchQuery.trim());
+        handleApiResponse(result);
+      } catch (error) {
+        console.error("Error fetching food details:", error);
+        Alert.alert("Error", "An error occurred while searching for the food.");
+        setAnalyzedFood(null);
+        setShowManualEntryForm(false);
+      } finally {
+        setIsSearching(false);
+      }
+    } else {
+      // Shared foods database search
+      setIsLoadingSharedFoods(true);
+      setAnalyzedFood(null);
+      setShowManualEntryForm(false);
+      setSharedFoods([]);
+      
+      try {
+        if (!session) {
+          Alert.alert("Auth Error", "You must be logged in to search the shared database.");
+          return;
+        }
+        
+        const results = await searchSharedFoods(searchQuery.trim());
+        console.log(`[TrackScreen] Found ${results.length} shared foods for "${searchQuery}"`);
+        setSharedFoods(results);
+        setShowSharedResults(true);
+      } catch (error) {
+        console.error("Error searching shared foods:", error);
+        Alert.alert("Error", "An error occurred while searching the shared database.");
+      } finally {
+        setIsLoadingSharedFoods(false);
+      }
     }
   };
   
@@ -289,7 +332,7 @@ export default function TrackScreen() {
     setScannedBarcodeForManualEntry(null); // Ensure barcode isn't carried over unintentionally
   };
   // --- End handler ---
-
+  
   const handleAddToLog = () => {
     if (analyzedFood) {
       const mealName = analyzedFood.name;
@@ -308,20 +351,20 @@ export default function TrackScreen() {
       };
       // --- End Calculation --- 
     
-      const newMeal: Meal = {
+    const newMeal: Meal = {
         id: `meal_${Date.now()}`,
         name: mealName,
         // Keep the original food data for reference within the meal
         // The meal's top-level macros represent the adjusted total consumed
         foods: [analyzedFood],
-        date: format(new Date(), 'yyyy-MM-dd'),
-        time: format(new Date(), 'HH:mm'),
+      date: format(new Date(), 'yyyy-MM-dd'),
+      time: format(new Date(), 'HH:mm'),
         type: selectedMealType,
         macros: adjustedMacros // Use the adjusted macros for the meal log
-      };
+    };
     
       console.log(`Adding meal (${selectedMealType}) with adjusted macros:`, newMeal);
-      addMeal(newMeal);
+    addMeal(newMeal);
     
       Alert.alert("Meal Added", `${analyzedFood.name} added as ${selectedMealType}.`);
       setAnalyzedFood(null); // Clear analyzed food after adding
@@ -607,6 +650,11 @@ export default function TrackScreen() {
     );
   }
   
+  const handleSelectSharedFood = (food: Food) => {
+    setAnalyzedFood(food);
+    setShowSharedResults(false);
+  };
+  
   // Main screen content (conditionally dimmed if analyzing label)
   return (
     <SafeAreaView style={[styles.safeArea, isAnalyzingLabel && styles.dimmedBackground]}>
@@ -635,14 +683,13 @@ export default function TrackScreen() {
         <Text style={styles.title}>Track Food</Text>
         <Text style={styles.subtitle}>Search, scan, or enter manually</Text>
 
-        {/* --- Search Row (Input, Scan, Manual) --- */}
-        <View style={styles.searchRowContainer}>
-          {/* Search Input Area */}
-          <View style={styles.inputContainer}>
+        {/* Search Bar with Toggle */}
+        <View style={styles.searchContainer}>
+          <View style={styles.searchInputContainer}>
             <SearchIcon size={20} color="#888" style={styles.searchIcon} />
             <TextInput
-              style={styles.input}
-              placeholder="Search for a food..."
+              style={styles.searchInput}
+              placeholder={searchMode === 'ai' ? "Search for a food..." : "Search shared database..."}
               placeholderTextColor="#999"
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -655,10 +702,12 @@ export default function TrackScreen() {
               </TouchableOpacity>
             )}
           </View>
+          
           {/* Scan Button */}
           <TouchableOpacity style={styles.scanButton} onPress={() => setShowingScanner(true)}>
             <Scan size={24} color="#4CAF50" />
           </TouchableOpacity>
+          
           {/* Manual Entry Button */}
           <TouchableOpacity 
             style={styles.manualEntryButton} 
@@ -667,22 +716,38 @@ export default function TrackScreen() {
             <PlusCircle size={28} color="#2196F3" />
           </TouchableOpacity>
         </View>
-        {/* --- End Search Row --- */}
-
-        {/* --- Analyze Button Row --- */}
+        
+        {/* Search Mode Toggle */}
+        <View style={styles.searchModeContainer}>
+          <Text style={[styles.searchModeLabel, searchMode === 'ai' ? styles.activeModeLabel : {}]}>AI</Text>
+          <Switch
+            trackColor={{ false: "#3498db", true: "#2ecc71" }}
+            thumbColor={"#fff"}
+            ios_backgroundColor="#3498db"
+            onValueChange={toggleSearchMode}
+            value={searchMode === 'shared'}
+            style={styles.modeSwitch}
+          />
+          <Text style={[styles.searchModeLabel, searchMode === 'shared' ? styles.activeModeLabel : {}]}>
+            <Database size={14} color={searchMode === 'shared' ? "#2ecc71" : "#666"} /> Shared
+          </Text>
+        </View>
+        
+        {/* Search Button */}
         <TouchableOpacity
-          style={[styles.analyzeButtonFullWidth, (!searchQuery.trim() || isSearching) && styles.disabledButton]}
+          style={[styles.analyzeButtonFullWidth, (!searchQuery.trim() || isSearching || isLoadingSharedFoods) && styles.disabledButton]}
           onPress={handleSearch}
-          disabled={!searchQuery.trim() || isSearching}
+          disabled={!searchQuery.trim() || isSearching || isLoadingSharedFoods}
         >
-          {isSearching ? (
+          {isSearching || isLoadingSharedFoods ? (
             <ActivityIndicator color="#FFF" />
           ) : (
-            <Text style={styles.analyzeButtonText}>Analyze Food</Text>
+            <Text style={styles.analyzeButtonText}>
+              {searchMode === 'ai' ? 'Analyze Food' : 'Search Shared Foods'}
+            </Text>
           )}
         </TouchableOpacity>
-        {/* --- End Analyze Button Row --- */}
-
+        
         {/* Scan Loading Indicator */}
         {scanLoading && (
           <View style={styles.loadingContainer}>
@@ -734,6 +799,70 @@ export default function TrackScreen() {
         />
         {/* --- End Render Favorites Modal --- */}
 
+        {/* Loading Indicators */}
+        {isSearching && (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#3498db" />
+            <Text style={styles.loadingText}>Searching using AI...</Text>
+          </View>
+        )}
+        
+        {isLoadingSharedFoods && (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#2ecc71" />
+            <Text style={styles.loadingText}>Searching shared database...</Text>
+          </View>
+        )}
+        
+        {/* Shared Foods Results */}
+        {showSharedResults && sharedFoods.length > 0 && (
+          <View style={styles.sharedResultsContainer}>
+            <Text style={styles.sectionTitle}>Shared Database Results</Text>
+            {sharedFoods.map((food) => (
+              <TouchableOpacity 
+                key={food.id} 
+                style={styles.sharedFoodItem}
+                onPress={() => handleSelectSharedFood(food)}
+              >
+                <View style={styles.sharedFoodHeader}>
+                  <Text style={styles.sharedFoodName}>{food.name}</Text>
+                  <Text style={[styles.ketoTag, styles[`keto${food.ketoRating.replace(/[- ]/g, '')}`]]}>
+                    {food.ketoRating}
+                  </Text>
+                </View>
+                
+                <Text style={styles.sharedFoodDetail}>
+                  Serving: {food.servingSize}
+                </Text>
+                
+                <View style={styles.macroRow}>
+                  <Text style={styles.macro}>Calories: {food.macros.calories}</Text>
+                  <Text style={styles.macro}>Net Carbs: {food.macros.carbs}g</Text>
+                  <Text style={styles.macro}>Protein: {food.macros.protein}g</Text>
+                  <Text style={styles.macro}>Fat: {food.macros.fat}g</Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+        
+        {showSharedResults && sharedFoods.length === 0 && !isLoadingSharedFoods && (
+          <View style={styles.emptyResultsContainer}>
+            <Text style={styles.emptyResultsText}>
+              No matching foods found in the shared database.
+            </Text>
+            <TouchableOpacity 
+              style={styles.switchToAIButton}
+              onPress={() => {
+                setSearchMode('ai');
+                handleSearch();
+              }}
+            >
+              <Text style={styles.switchToAIText}>Try AI Search Instead</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -763,12 +892,12 @@ const styles = StyleSheet.create({
     color: '#666',
     marginBottom: 20,
   },
-  searchRowContainer: { 
+  searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 15, // Add margin below search row
+    marginBottom: 15,
   },
-  inputContainer: {
+  searchInputContainer: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
@@ -788,16 +917,13 @@ const styles = StyleSheet.create({
     shadowRadius: 2.22,
     elevation: 2,
   },
-  searchIcon: {
-    marginRight: 10,
-  },
-  input: {
+  searchInput: {
     flex: 1,
     fontSize: 16,
     fontFamily: 'Inter-Regular',
     color: '#333',
   },
-  scanButton: {
+  searchButton: {
     padding: 12,
     backgroundColor: '#E8F5E9',
     borderRadius: 12,
@@ -806,43 +932,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  analyzeButtonFullWidth: {
-    backgroundColor: '#4CAF50',
-    paddingVertical: 15,
-    borderRadius: 12,
+  searchModeContainer: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 20, // Margin below analyze button
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.15,
-    shadowRadius: 3.84,
-    elevation: 5,
+    marginTop: 8,
+    marginBottom: 12,
   },
-  disabledButton: {
-    backgroundColor: '#a5d6a7',
-    elevation: 0,
-    shadowOpacity: 0,
+  searchModeLabel: {
+    fontSize: 14,
+    color: '#666',
+    marginHorizontal: 8,
   },
-  analyzeButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontFamily: 'Inter-SemiBold',
+  activeModeLabel: {
+    fontWeight: 'bold',
+    color: '#000',
   },
-  loadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 30,
-    marginTop: 20,
-  },
-  loadingText: {
-    marginTop: 15,
-    fontSize: 16,
-    fontFamily: 'Inter-Regular',
-    color: '#555',
+  modeSwitch: {
+    transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }],
   },
   resultContainer: {
     marginTop: 20,
@@ -873,11 +980,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 15, // Space above the input
-    marginBottom: 15, // Space below the input
+    marginTop: 15,
+    marginBottom: 15,
     paddingVertical: 10,
     paddingHorizontal: 15,
-    backgroundColor: '#f9f9f9', // Slight background highlight
+    backgroundColor: '#f9f9f9',
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#eee',
@@ -895,7 +1002,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontSize: 16,
     fontFamily: 'Inter-Regular',
-    minWidth: 60, // Ensure it has some width
+    minWidth: 60,
     textAlign: 'center',
     backgroundColor: '#fff',
   },
@@ -1005,23 +1112,22 @@ const styles = StyleSheet.create({
   scanLabelButtonText: {
     color: '#fff',
   },
-  // Styles for Camera View
   cameraOverlay: {
     flex: 1,
     backgroundColor: 'transparent',
-    flexDirection: 'column', // Align items vertically
-    justifyContent: 'space-between', // Push close to top, capture to bottom
+    flexDirection: 'column',
+    justifyContent: 'space-between',
     padding: 30,
   },
   cameraCloseButton: {
-    alignSelf: 'flex-start', // Position close button top-left (within padding)
+    alignSelf: 'flex-start',
     padding: 10,
     backgroundColor: 'rgba(0,0,0,0.4)',
     borderRadius: 25,
   },
   cameraCaptureButton: {
-    alignSelf: 'center', // Center capture button horizontally
-    marginBottom: 20, // Space from bottom
+    alignSelf: 'center',
+    marginBottom: 20,
     width: 70,
     height: 70,
     borderRadius: 35,
@@ -1029,13 +1135,12 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: 'rgba(0,0,0,0.3)',
   },
-  // Styles for Label Analysis Loading
   labelAnalysisLoadingOverlay: {
-    ...StyleSheet.absoluteFillObject, // Cover entire screen
-    backgroundColor: 'rgba(0, 0, 0, 0.6)', // Semi-transparent black
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 10, // Ensure it's above other content
+    zIndex: 10,
   },
   labelAnalysisLoadingText: {
     marginTop: 15,
@@ -1044,36 +1149,34 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   dimmedBackground: {
-      opacity: 0.5, // Dim the background content slightly
+      opacity: 0.5,
   },
-  // Verification Hint Styles
   verificationHintContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFF8E1', // Light yellow background
+    backgroundColor: '#FFF8E1',
     padding: 10,
     borderRadius: 8,
-    marginBottom: 15, // Add margin below the hint
+    marginBottom: 15,
     borderWidth: 1,
-    borderColor: '#FFECB3', // Lighter yellow border
+    borderColor: '#FFECB3',
   },
   verificationHintIcon: {
     marginRight: 8,
   },
   verificationHintText: {
-    flex: 1, // Allow text to wrap
+    flex: 1,
     fontFamily: 'Inter-Regular',
     fontSize: 13,
-    color: '#FFA000', // Darker yellow text
+    color: '#FFA000',
     lineHeight: 18,
   },
-  // Meal Type Button Styles (Reinstated)
   mealTypeContainer: {
     flexDirection: 'row',
-    flexWrap: 'wrap', // Allow buttons to wrap
-    justifyContent: 'space-around', // Distribute space
-    marginTop: 15, // Add margin above buttons
-    marginBottom: 10, // Add margin below buttons
+    flexWrap: 'wrap',
+    justifyContent: 'space-around',
+    marginTop: 15,
+    marginBottom: 10,
   },
   mealTypeButton: {
     flexDirection: 'row',
@@ -1092,20 +1195,166 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#444',
   },
-  // ADD Style for Header Favorites Button (Absolute Positioning)
   headerFavoritesButton: {
     position: 'absolute',
-    top: 55, // Lowered the button
-    right: 16, // Adjust based on SafeAreaView padding/margins
+    top: 55,
+    right: 16,
     padding: 10,
-    zIndex: 10, // Ensure it's above other scroll content
-    backgroundColor: '#FFF0F0', // Keep background for visibility
+    zIndex: 10,
+    backgroundColor: '#FFF0F0',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#FFCDD2',
   },
+  sharedResultsContainer: {
+    marginTop: 16,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  sharedFoodItem: {
+    backgroundColor: '#f9f9f9',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#2ecc71',
+  },
+  sharedFoodHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  sharedFoodName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    flex: 1,
+  },
+  ketoTag: {
+    fontSize: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+    overflow: 'hidden',
+    fontWeight: 'bold',
+  },
+  ketoKetoFriendly: {
+    backgroundColor: '#d5f5e3',
+    color: '#27ae60',
+  },
+  ketoLimit: {
+    backgroundColor: '#fef9e7',
+    color: '#f39c12',
+  },
+  ketoStrictlyLimit: {
+    backgroundColor: '#fdedec',
+    color: '#e74c3c',
+  },
+  ketoAvoid: {
+    backgroundColor: '#f5eef8',
+    color: '#8e44ad',
+  },
+  sharedFoodDetail: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 6,
+  },
+  macroRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 4,
+  },
+  macro: {
+    fontSize: 12,
+    backgroundColor: '#eee',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginRight: 6,
+    marginBottom: 4,
+  },
+  emptyResultsContainer: {
+    marginTop: 16,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 16,
+    alignItems: 'center',
+  },
+  emptyResultsText: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  switchToAIButton: {
+    backgroundColor: '#3498db',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  switchToAIText: {
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  searchIcon: {
+    marginRight: 10,
+  },
+  clearButton: {
+    padding: 10,
+  },
+  scanButton: {
+    padding: 10,
+  },
   manualEntryButton: {
-    padding: 12, // Keep padding for touch area
-    marginLeft: 10, // Space between Scan and Manual Entry buttons
+    padding: 10,
+  },
+  analyzeButtonFullWidth: {
+    backgroundColor: '#4CAF50',
+    paddingVertical: 15,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.15,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  disabledButton: {
+    backgroundColor: '#a5d6a7',
+    elevation: 0,
+    shadowOpacity: 0,
+  },
+  analyzeButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontFamily: 'Inter-SemiBold',
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 30,
+    marginTop: 20,
+  },
+  loadingText: {
+    marginTop: 15,
+    fontSize: 16,
+    fontFamily: 'Inter-Regular',
+    color: '#555',
   },
 });
