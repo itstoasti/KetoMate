@@ -386,7 +386,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
               }
               
               return {
-                  id: dbEntry.id,
+              id: dbEntry.id,
                   date: dbEntry.entry_date, 
                   weight: weightValue, 
                   unit: preferredUnit,
@@ -847,11 +847,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             // notes: undefined
         };
 
-        const updatedHistory = weightHistory.map(entry => 
+    const updatedHistory = weightHistory.map(entry => 
             entry.id === entryId ? updatedAppEntry : entry
-        );
+    );
         updatedHistory.sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)));
-        setWeightHistory(updatedHistory);
+    setWeightHistory(updatedHistory);
 
         // Update user profile if this was the latest weight entry
         if (userProfile && updatedHistory.length > 0 && updatedHistory[0].id === entryId) {
