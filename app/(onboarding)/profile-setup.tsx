@@ -48,8 +48,7 @@ export default function ProfileSetup() {
   
   const toggleHeightUnit = () => {
     if (heightUnit === 'cm') {
-      setHeightUnit('ft');
-      // Convert cm to ft if there's a value
+      // Switch from cm to ft/in
       if (height) {
         const heightNum = parseFloat(height);
         if (!isNaN(heightNum)) {
@@ -62,22 +61,21 @@ export default function ProfileSetup() {
           setInches(remainingInches.toString());
         }
       }
+      setHeightUnit('ft');
     } else {
-      setHeightUnit('cm');
-      // Convert ft and inches to cm if there's a value
-      if (height) {
-        const feetNum = parseFloat(height);
-        const inchesNum = parseFloat(inches || '0');
+      // Switch from ft/in to cm
+      const feetNum = parseFloat(height || '0');
+      const inchesNum = parseFloat(inches || '0');
+      
+      if (!isNaN(feetNum) || !isNaN(inchesNum)) {
+        // Convert feet and inches to cm
+        const totalInches = (feetNum * 12) + inchesNum;
+        const cm = Math.round(totalInches / 0.393701);
         
-        if (!isNaN(feetNum)) {
-          // Convert feet and inches to cm
-          const totalInches = (feetNum * 12) + inchesNum;
-          const cm = Math.round(totalInches / 0.393701);
-          
-          setHeight(cm.toString());
-          setInches(''); // Clear inches when switching to cm
-        }
+        setHeight(cm.toString());
+        setInches(''); // Clear inches when switching to cm
       }
+      setHeightUnit('cm');
     }
   };
   
@@ -106,9 +104,9 @@ export default function ProfileSetup() {
         const feetNum = parseFloat(height);
         const inchesNum = parseFloat(inches || '0');
         
-        // Store height in the selected unit, but calculate the equivalent in cm for the database
-        const totalInches = (feetNum * 12) + inchesNum;
-        heightNum = totalInches / 0.393701; // Convert to cm for storage
+          // Store height in the selected unit, but calculate the equivalent in cm for the database
+          const totalInches = (feetNum * 12) + inchesNum;
+          heightNum = totalInches / 0.393701; // Convert to cm for storage
       } else {
         heightNum = parseFloat(height);
       }
@@ -250,12 +248,12 @@ export default function ProfileSetup() {
                       <Text style={styles.unitLabel}>in</Text>
                     </View>
                     
-                    {/* Unit toggle button - switch to cm */}
+                    {/* Unit toggle button - showing current unit */}
                     <TouchableOpacity 
                       style={styles.unitToggle}
                       onPress={toggleHeightUnit}
                     >
-                      <Text style={styles.unitToggleText}>cm</Text>
+                      <Text style={styles.unitToggleText}>ft</Text>
                     </TouchableOpacity>
                   </View>
                 ) : (
@@ -268,12 +266,12 @@ export default function ProfileSetup() {
                       placeholderTextColor="#999"
                       keyboardType="decimal-pad"
                     />
-                    {/* Unit toggle button - switch to ft/in */}
+                    {/* Unit toggle button - showing current unit */}
                     <TouchableOpacity 
                       style={styles.unitToggle}
                       onPress={toggleHeightUnit}
                     >
-                      <Text style={styles.unitToggleText}>ft</Text>
+                      <Text style={styles.unitToggleText}>cm</Text>
                     </TouchableOpacity>
                   </View>
                 )}

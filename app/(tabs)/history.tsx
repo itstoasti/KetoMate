@@ -188,11 +188,25 @@ export default function HistoryScreen() {
       return { labels: [format(startDate, 'MM/dd'), format(endDate, 'MM/dd')], datasets: [{ data: [0, 0], color: () => '#8884d8' }] };
     }
 
+    console.log(`[WeightHistory] Creating chart with ${relevantHistory.length} entries, display unit: ${displayWeightUnit}`);
     const labels = relevantHistory.map(entry => format(parseISO(entry.date), 'MM/dd'));
     const dataPoints = relevantHistory.map(entry => {
-      const weightInKg = entry.weight;
-      const displayWeight = displayWeightUnit === 'lb' ? kgToLb(weightInKg) : weightInKg;
-      return roundToDecimal(displayWeight, 1);
+      // Always convert kg values to lb if that's the display unit
+      let displayWeight = entry.weight;
+      
+      // Force kg values to convert to lb
+      if (entry.unit === 'kg' && displayWeightUnit === 'lb') {
+        displayWeight = kgToLb(entry.weight);
+      }
+      
+      // Handle the reverse case
+      if (entry.unit === 'lb' && displayWeightUnit === 'kg') {
+        displayWeight = lbToKg(entry.weight);
+      }
+      
+      const finalWeight = roundToDecimal(displayWeight, 1);
+      console.log(`[WeightHistory] Chart point: ${entry.weight} ${entry.unit} -> ${finalWeight} ${displayWeightUnit}`);
+      return finalWeight;
     });
 
     // Ensure labels/data have minimum length if needed by chart library
@@ -265,8 +279,26 @@ export default function HistoryScreen() {
   // Edit Handlers
   const openEditModal = (entry: WeightEntry) => {
     setEditingEntry(entry);
-    const displayWeight = displayWeightUnit === 'lb' ? kgToLb(entry.weight) : entry.weight;
-    setEditWeightValue(roundToDecimal(displayWeight, 1).toString());
+    console.log(`[WeightHistory] Opening edit modal for entry: ${entry.id}, weight: ${entry.weight}, unit: ${entry.unit}, display unit: ${displayWeightUnit}`);
+    
+    // Always convert from kg to lb if needed
+    let displayWeight = entry.weight;
+    
+    // Force kg values to convert to lb
+    if (entry.unit === 'kg' && displayWeightUnit === 'lb') {
+      console.log(`[WeightHistory] Converting ${entry.weight} kg to lb for edit`);
+      displayWeight = kgToLb(entry.weight);
+    }
+    
+    // Handle the reverse case
+    if (entry.unit === 'lb' && displayWeightUnit === 'kg') {
+      console.log(`[WeightHistory] Converting ${entry.weight} lb to kg for edit`);
+      displayWeight = lbToKg(entry.weight);
+    }
+    
+    const finalWeight = roundToDecimal(displayWeight, 1);
+    console.log(`[WeightHistory] Final edit value: ${finalWeight} ${displayWeightUnit}`);
+    setEditWeightValue(finalWeight.toString());
     setIsEditModalVisible(true);
   };
 
@@ -292,7 +324,26 @@ export default function HistoryScreen() {
 
   // Helper to render a single weight history item (with Edit/Delete)
   const renderWeightHistoryItem = ({ item }: { item: WeightEntry }) => {
-    const displayWeight = displayWeightUnit === 'lb' ? kgToLb(item.weight) : item.weight;
+    // Debug the entry to see what's happening
+    console.log(`[WeightHistory] Rendering entry: ${item.id}, weight: ${item.weight}, unit: ${item.unit}, display unit: ${displayWeightUnit}`);
+    
+    // Since we want to display in lb, always convert to lb if the item is in kg
+    let displayWeight = item.weight;
+    
+    // Force kg values to convert to lb, since that's what the user wants to see
+    if (item.unit === 'kg' && displayWeightUnit === 'lb') {
+      console.log(`[WeightHistory] Converting ${item.weight} kg to lb`);
+      displayWeight = kgToLb(item.weight);
+    }
+    
+    // In an unlikely case, handle conversion the other way
+    if (item.unit === 'lb' && displayWeightUnit === 'kg') {
+      console.log(`[WeightHistory] Converting ${item.weight} lb to kg`);
+      displayWeight = lbToKg(item.weight);
+    }
+    
+    console.log(`[WeightHistory] Final display weight: ${roundToDecimal(displayWeight, 1)} ${displayWeightUnit}`);
+
     return (
       <View style={styles.weightLogItem}>
         <View style={styles.weightLogDetails}>

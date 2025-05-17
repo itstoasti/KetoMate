@@ -1,4 +1,4 @@
-package com.deanfieldz.boltexponativewind
+package com.deanfieldz.ketomate
 
 import android.app.Application
 import android.content.res.Configuration

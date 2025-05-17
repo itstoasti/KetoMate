@@ -15,6 +15,8 @@ export interface Food {
   ketoRating: 'Keto-Friendly' | 'Limit' | 'Strictly Limit' | 'Avoid';
   dateAdded: string;
   description?: string;
+  quantity?: number;
+  source?: 'custom' | 'user' | 'ai';
 }
 
 export interface Meal {

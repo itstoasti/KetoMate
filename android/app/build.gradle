@@ -109,9 +109,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.deanfieldz.boltexponativewind'
+    namespace 'com.deanfieldz.ketomate'
     defaultConfig {
-        applicationId 'com.deanfieldz.boltexponativewind'
+        applicationId 'com.deanfieldz.ketomate'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

@@ -4,6 +4,7 @@ import { useAppContext } from '@/context/AppContext';
 import { UserProfile } from '@/types';
 import { Save, CircleUser as UserCircle, Settings, CornerUpRight, Info, Trash2, LogOut } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // --- Weight Conversion Helpers ---
 const KG_TO_LB = 2.20462;
@@ -195,7 +196,29 @@ export default function ProfileScreen() {
   
   const handleHeightUnitChange = (newUnit: 'cm' | 'ft') => {
     if (newUnit === heightUnit) return;
-    // No conversion needed here, just switch the displayed inputs
+    
+    // If switching from cm to ft/in
+    if (newUnit === 'ft' && heightUnit === 'cm') {
+      const cmValue = parseFloat(heightCm);
+      if (!isNaN(cmValue)) {
+        const { ft, in: inches } = cmToFtIn(cmValue);
+        setHeightFt(ft.toString());
+        setHeightIn(inches.toString());
+      }
+    }
+    // If switching from ft/in to cm
+    else if (newUnit === 'cm' && heightUnit === 'ft') {
+      const ftValue = parseFloat(heightFt);
+      const inValue = parseFloat(heightIn);
+      if (!isNaN(ftValue) || !isNaN(inValue)) {
+        const ft = isNaN(ftValue) ? 0 : ftValue;
+        const inches = isNaN(inValue) ? 0 : inValue;
+        const cmValue = ftInToCm(ft, inches);
+        setHeightCm(Math.round(cmValue).toString());
+      }
+    }
+    
+    // Update the height unit
     setHeightUnit(newUnit);
   };
 

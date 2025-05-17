@@ -1,4 +1,4 @@
-package com.deanfieldz.boltexponativewind
+package com.deanfieldz.ketomate
 
 import android.os.Build
 import android.os.Bundle

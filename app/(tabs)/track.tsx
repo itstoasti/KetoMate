@@ -10,13 +10,21 @@ import {
   Keyboard,
   Alert,
   Platform,
-  Switch
+  Switch,
+  Linking
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Search as SearchIcon, Scan, X, CheckCircle2, Plus, Check, Info, Star, Heart, PlusCircle, Database } from 'lucide-react-native';
 import { useAppContext } from '../../context/AppContext';
 import { Food, Macro, Meal } from '../../types';
-import { getFoodDetailsFromAI, NotFoundMarker, getNutritionFromImageAI, mockFoodSearch, getKetoRating, searchSharedFoods } from '../../services/foodService';
+import { 
+  getFoodDetailsFromAI, 
+  NotFoundMarker, 
+  getNutritionFromImageAI, 
+  mockFoodSearch, 
+  getKetoRating, 
+  searchSharedFoods,
+} from '../../services/foodService';
 import FoodCard from '../../components/FoodCard';
 import BarcodeScanner from '../../components/BarcodeScanner';
 import FavoritesModal from '../../components/FavoritesModal';
@@ -63,7 +71,7 @@ export default function TrackScreen() {
 
   const [showFavoritesModal, setShowFavoritesModal] = useState(false); // State for modal visibility
 
-  const [searchMode, setSearchMode] = useState<'ai' | 'shared'>('ai');
+  const [searchMode, setSearchMode] = useState<'ai' | 'community'>('community'); // Changed states and default
   const [sharedFoods, setSharedFoods] = useState<Food[]>([]);
   const [isLoadingSharedFoods, setIsLoadingSharedFoods] = useState(false);
   const [showSharedResults, setShowSharedResults] = useState(false);
@@ -155,13 +163,17 @@ export default function TrackScreen() {
     }
   };
   
-  const toggleSearchMode = () => {
-    setSearchMode(prev => prev === 'ai' ? 'shared' : 'ai');
-    // Clear any previous results when toggling
+  const handleChangeSearchMode = (newMode: 'ai' | 'community') => {
+    if (searchMode === newMode) return; 
+
+    setSearchMode(newMode);
+    // Cleanup logic
     setAnalyzedFood(null);
     setShowManualEntryForm(false);
     setSharedFoods([]);
     setShowSharedResults(false);
+    setSearchQuery(''); 
+    Keyboard.dismiss(); 
   };
   
   const handleSearch = async () => {
@@ -177,22 +189,24 @@ export default function TrackScreen() {
       setShowSharedResults(false);
 
       try {
+        console.log('[TrackScreen] Starting AI food analysis for:', searchQuery.trim());
         const result = await getFoodDetailsFromAI(searchQuery.trim());
+        console.log('[TrackScreen] Received result from AI service');
         handleApiResponse(result);
       } catch (error) {
         console.error("Error fetching food details:", error);
-        Alert.alert("Error", "An error occurred while searching for the food.");
+        Alert.alert("Error", "An error occurred while searching for the food. Try again or use manual entry.");
         setAnalyzedFood(null);
         setShowManualEntryForm(false);
       } finally {
         setIsSearching(false);
       }
-    } else {
-      // Shared foods database search
+    } else if (searchMode === 'community') { 
       setIsLoadingSharedFoods(true);
       setAnalyzedFood(null);
       setShowManualEntryForm(false);
       setSharedFoods([]);
+      setShowSharedResults(false); 
       
       try {
         if (!session) {
@@ -200,7 +214,10 @@ export default function TrackScreen() {
           return;
         }
         
-        const results = await searchSharedFoods(searchQuery.trim());
+        // 'community' mode now directly uses searchSharedFoods or a similar function intended for the shared database.
+        // If you had specific 'all' logic before that was different from 'shared', ensure it's correctly consolidated or adjusted.
+        // For now, we will use searchSharedFoods as that seems to be the intent for the "Shared" option.
+        const results = await searchSharedFoods(searchQuery.trim()); // Explicitly using searchSharedFoods
         console.log(`[TrackScreen] Found ${results.length} shared foods for "${searchQuery}"`);
         setSharedFoods(results);
         setShowSharedResults(true);
@@ -275,20 +292,27 @@ export default function TrackScreen() {
       }
       
       console.log(`[TrackScreen] Falling back to AI for barcode: ${barcode}`);
-      // const initialQuery = `food item with barcode ${barcode}`; // OLD - Incorrect
-      // Pass the raw barcode directly to the AI service
-      const result = await getFoodDetailsFromAI(barcode);
-      handleApiResponse(result, true, barcode);
+      try {
+        const result = await getFoodDetailsFromAI(barcode);
+        handleApiResponse(result, true, barcode);
+      } catch (error) {
+        console.error("[TrackScreen] AI barcode analysis error:", error);
+        Alert.alert("Error", "Could not analyze barcode. Please try manual entry.");
+        setShowManualEntryForm(true);
+        setScannedBarcodeForManualEntry(barcode);
+      }
 
     } catch (error) {
       console.error("Error processing barcode scan:", error);
-      Alert.alert("Error", "An unexpected error occurred while processing the barcode.");
+      Alert.alert("Error", "An unexpected error occurred. You can try entering details manually.");
       setAnalyzedFood(null);
-      setShowManualEntryForm(false);
-      setScannedBarcodeForManualEntry(null);
-      setShowingScanner(false);
+      setShowManualEntryForm(true);
+      setScannedBarcodeForManualEntry(barcode);
     } finally {
       setScanLoading(false);
+      if (showingScanner) {
+        setShowingScanner(false);
+      }
     }
   };
   
@@ -334,42 +358,51 @@ export default function TrackScreen() {
   // --- End handler ---
   
   const handleAddToLog = () => {
-    if (analyzedFood) {
-      const mealName = analyzedFood.name;
-      
-      // --- Calculate Adjusted Macros --- 
-      const multiplier = parseFloat(servingMultiplier);
-      // Use 1 as default if parsing fails or value is not positive
-      const validMultiplier = !isNaN(multiplier) && multiplier > 0 ? multiplier : 1;
-      console.log(`[TrackScreen] Using serving multiplier: ${validMultiplier} (input: "${servingMultiplier}")`);
-      
-      const adjustedMacros: Macro = {
-        carbs: (analyzedFood.macros.carbs || 0) * validMultiplier,
-        protein: (analyzedFood.macros.protein || 0) * validMultiplier,
-        fat: (analyzedFood.macros.fat || 0) * validMultiplier,
-        calories: (analyzedFood.macros.calories || 0) * validMultiplier,
-      };
-      // --- End Calculation --- 
-    
-    const newMeal: Meal = {
-        id: `meal_${Date.now()}`,
-        name: mealName,
-        // Keep the original food data for reference within the meal
-        // The meal's top-level macros represent the adjusted total consumed
-        foods: [analyzedFood],
-      date: format(new Date(), 'yyyy-MM-dd'),
-      time: format(new Date(), 'HH:mm'),
-        type: selectedMealType,
-        macros: adjustedMacros // Use the adjusted macros for the meal log
-    };
-    
-      console.log(`Adding meal (${selectedMealType}) with adjusted macros:`, newMeal);
-    addMeal(newMeal);
-    
-      Alert.alert("Meal Added", `${analyzedFood.name} added as ${selectedMealType}.`);
-      setAnalyzedFood(null); // Clear analyzed food after adding
-      setServingMultiplier('1'); // Reset multiplier after adding
+    if (!analyzedFood) {
+      Alert.alert("No Food Selected", "Please search or scan a food item first.");
+      return;
     }
+
+    const multiplier = parseFloat(servingMultiplier) || 1;
+    if (multiplier <= 0) {
+      Alert.alert("Invalid Serving", "Please enter a positive serving size multiplier.");
+      return;
+    }
+
+    const now = new Date();
+    const today = format(now, 'yyyy-MM-dd');
+    
+    // Calculate multiplied macros
+    const adjustedMacros: Macro = {
+      calories: Math.round(analyzedFood.macros.calories * multiplier),
+      carbs: parseFloat((analyzedFood.macros.carbs * multiplier).toFixed(1)),
+      protein: parseFloat((analyzedFood.macros.protein * multiplier).toFixed(1)),
+      fat: parseFloat((analyzedFood.macros.fat * multiplier).toFixed(1)),
+    };
+
+    const newMeal: Meal = {
+      id: uuidv4(),
+      name: `${analyzedFood.name} (${multiplier}x)`,
+      date: today,
+      type: selectedMealType,
+      foods: [{ ...analyzedFood, quantity: multiplier }],
+      macros: adjustedMacros,
+      time: format(now, 'HH:mm') // Add current time
+    };
+
+    // Save to the add meal function from context
+    addMeal(newMeal)
+      .then(() => {
+        console.log('[TrackScreen] Successfully added meal to log');
+        
+        // Clear the UI
+        setAnalyzedFood(null);
+        setSearchQuery('');
+      })
+      .catch(error => {
+        console.error('[TrackScreen] Error adding meal:', error);
+        Alert.alert("Error", "Failed to add meal to your log.");
+      });
   };
   
   const renderMealTypeButtons = () => {
@@ -413,6 +446,19 @@ export default function TrackScreen() {
       Alert.alert("Missing Info", "Please enter at least a Name and Serving Size.");
       return;
     }
+    
+    // Extract food name and brand if format looks like "Brand - Food Name"
+    let foodName = manualName.trim();
+    let brandName = 'Manual Entry';
+    
+    if (foodName.includes(' - ')) {
+      const parts = foodName.split(' - ');
+      if (parts.length >= 2) {
+        brandName = parts[0].trim();
+        foodName = parts.slice(1).join(' - ').trim();
+      }
+    }
+    
     const calories = parseFloat(manualCalories) || 0;
     // IMPORTANT: Assume carbs entered manually are NET CARBS
     // If you want users to enter Total Carbs/Fiber/Sugar Alc manually,
@@ -430,8 +476,8 @@ export default function TrackScreen() {
 
     const newManualFood: Food = {
       id: uuidv4(),
-      name: manualName.trim(),
-      brand: 'Manual Entry',
+      name: foodName,
+      brand: brandName,
       servingSize: manualServingSize.trim(),
       macros: macros,
       description: 'Manually entered food item.',
@@ -445,9 +491,6 @@ export default function TrackScreen() {
     const currentBarcode = scannedBarcodeForManualEntry; // Capture before reset
 
     // Clear local state *after* capturing barcode, before potentially long async call
-    // setManualName(''); <-- redundant
-    // ... reset other manual fields ... <-- redundant
-    // setScannedBarcodeForManualEntry(null); <-- redundant
     Keyboard.dismiss();
 
     if (currentBarcode) {
@@ -482,15 +525,54 @@ export default function TrackScreen() {
 
   const handleOpenCameraForLabelScan = async () => {
     Keyboard.dismiss(); // Dismiss keyboard if open
-    const { status } = await Camera.requestCameraPermissionsAsync();
+    
+    // First check if permission is already granted
+    let { status } = await Camera.getCameraPermissionsAsync();
+    console.log('[TrackScreen] Initial camera permission status:', status);
+    
+    // If not granted already, request it
+    if (status !== 'granted') {
+      console.log('[TrackScreen] Camera permission not granted, requesting...');
+      const { status: newStatus } = await Camera.requestCameraPermissionsAsync();
+      status = newStatus;
+      console.log('[TrackScreen] New camera permission status:', status);
+    }
+    
     setHasCameraPermission(status === 'granted');
 
     if (status === 'granted') {
       console.log('[TrackScreen] Camera permission granted, opening label scanner.');
       setShowLabelScanner(true);
     } else {
-      Alert.alert('Permission Denied', 'Camera access is required to scan nutrition labels.');
       console.log('[TrackScreen] Camera permission denied.');
+      
+      // Check if permission is permanently denied
+      if (status === 'denied') {
+        Alert.alert(
+          'Camera Permission Required',
+          'KetoMate needs camera access to scan nutrition labels. Please enable camera permissions in your device settings.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { 
+              text: 'Open Settings', 
+              onPress: () => {
+                // Open device settings
+                if (Platform.OS === 'ios') {
+                  Linking.openURL('app-settings:');
+                } else {
+                  Linking.openSettings();
+                }
+              } 
+            }
+          ]
+        );
+      } else {
+        // Regular denial
+        Alert.alert(
+          'Permission Denied', 
+          'Camera access is required to scan nutrition labels.'
+        );
+      }
     }
   };
 
@@ -511,43 +593,71 @@ export default function TrackScreen() {
         if (photoBase64) {
           // 2. Call AI service with base64 data
           console.log('[TrackScreen] Sending image base64 to AI for analysis...');
-          const nutritionResult = await getNutritionFromImageAI(photoBase64);
-
-          if (nutritionResult.error) {
-              throw new Error(`Analysis Service Error: ${nutritionResult.error}`);
-          }
-
-          console.log('[TrackScreen] AI Analysis Result:', nutritionResult);
           
-          // Log carb breakdown
-          console.log(`[TrackScreen] Carb breakdown: Total=${nutritionResult.totalCarbs}, Fiber=${nutritionResult.fiber}, SugarAlc=${nutritionResult.sugarAlcohols}, Net=${nutritionResult.netCarbs}`);
+          try {
+            const nutritionResult = await getNutritionFromImageAI(photoBase64);
 
-          // 3. Populate manual entry fields
-          setManualName(nutritionResult.name || '');
-          setManualServingSize(nutritionResult.servingSize || '');
-          setManualCalories(nutritionResult.calories !== undefined ? String(nutritionResult.calories) : '');
-          const carbsToSet = nutritionResult.netCarbs !== undefined
+            if (nutritionResult.error) {
+              console.error('[TrackScreen] AI Analysis error:', nutritionResult.error);
+              throw new Error(`Analysis failed: ${nutritionResult.error}`);
+            }
+
+            console.log('[TrackScreen] AI Analysis Result:', nutritionResult);
+            
+            // Log carb breakdown
+            console.log(`[TrackScreen] Carb breakdown: Total=${nutritionResult.totalCarbs}, Fiber=${nutritionResult.fiber}, SugarAlc=${nutritionResult.sugarAlcohols}, Net=${nutritionResult.netCarbs}`);
+
+            // 3. Populate manual entry fields with values or defaults
+            setManualName(nutritionResult.name || '');
+            setManualServingSize(nutritionResult.servingSize || '');
+            setManualCalories(nutritionResult.calories !== undefined ? String(nutritionResult.calories) : '');
+            const carbsToSet = nutritionResult.netCarbs !== undefined
               ? String(nutritionResult.netCarbs)
               : nutritionResult.totalCarbs !== undefined // Fallback to totalCarbs if netCarbs missing
                   ? String(nutritionResult.totalCarbs)
                   : ''; // Default to empty if neither is present
-          setManualCarbs(carbsToSet);
-          setManualProtein(nutritionResult.protein !== undefined ? String(nutritionResult.protein) : '');
-          setManualFat(nutritionResult.fat !== undefined ? String(nutritionResult.fat) : '');
-          
-          // --- Set the flag indicating AI populated the form ---
-          setFormPopulatedByAI(true); 
-          // --- End set flag ---
-
-          Alert.alert('Success', 'Nutrition information extracted. Please review and confirm.');
-
+            setManualCarbs(carbsToSet);
+            setManualProtein(nutritionResult.protein !== undefined ? String(nutritionResult.protein) : '');
+            setManualFat(nutritionResult.fat !== undefined ? String(nutritionResult.fat) : '');
+            
+            // --- Set the flag indicating AI populated the form ---
+            setFormPopulatedByAI(true); 
+            
+            // Open manual entry form if it's not already open
+            setShowManualEntryForm(true);
+            
+            Alert.alert(
+              'Nutrition Analyzed',
+              'We extracted the nutrition information. Please review and make any needed corrections before saving.',
+              [{ text: "OK" }]
+            );
+          } catch (analysisError: any) {
+            console.error('[TrackScreen] Error analyzing nutrition label:', analysisError);
+            
+            // Open manual entry form anyway so user can enter data
+            setShowManualEntryForm(true);
+            setFormPopulatedByAI(false);
+            
+            Alert.alert(
+              'Could Not Analyze Label',
+              'We couldn\'t automatically read the nutrition label. Please enter the nutrition information manually.',
+              [{ text: "OK" }]
+            );
+          }
         } else {
           console.warn('[TrackScreen] No base64 data found in photo object.');
           Alert.alert('Error', 'Could not capture image data.');
+          setShowManualEntryForm(true); // Still let the user enter data manually
         }
       } catch (error: any) {
         console.error('[TrackScreen] Error during nutrition label processing:', error);
-        Alert.alert('Error', `Failed to analyze nutrition label: ${error.message}`);
+        setShowManualEntryForm(true); // Still let the user enter data manually
+        
+        Alert.alert(
+          'Error Capturing Image',
+          'There was a problem with the camera. You can enter the nutrition information manually.',
+          [{ text: "OK" }]
+        );
       } finally {
         setIsAnalyzingLabel(false);
       }
@@ -655,6 +765,74 @@ export default function TrackScreen() {
     setShowSharedResults(false);
   };
   
+  const renderFoodItem = ({ item }: { item: Food }) => {
+    const isMatchingBarcode = scannedBarcodeForManualEntry && item.barcode === scannedBarcodeForManualEntry;
+    const carbsLabel = item.macros.carbs === (item.macros as any).netCarbs 
+      ? `${item.macros.carbs}g carbs` 
+      : `${(item.macros as any).netCarbs || item.macros.carbs}g net carbs`;
+    
+    // Determine the source badge color and icon
+    let sourceBadge = null;
+    if (item.source === 'user') {
+      sourceBadge = (
+        <View style={styles.sourceBadge}>
+          <Heart size={12} color="#fff" />
+          <Text style={styles.sourceBadgeText}>Shared</Text>
+        </View>
+      );
+    } else if (item.source === 'ai') {
+      sourceBadge = (
+        <View style={styles.sourceBadge}>
+          <SearchIcon size={12} color="#fff" />
+          <Text style={styles.sourceBadgeText}>AI</Text>
+        </View>
+      );
+    }
+
+    return (
+      <TouchableOpacity
+        style={[
+          styles.foodItem,
+          isMatchingBarcode ? styles.matchingBarcodeItem : null
+        ]}
+        onPress={() => handleSelectSharedFood(item)}
+      >
+        <View style={styles.foodItemContent}>
+          <View style={styles.foodItemHeader}>
+            {item.barcode && <Scan size={14} color="#666" style={styles.barcodeIcon} />}
+            {isMatchingBarcode && <CheckCircle2 size={16} color="#22c55e" style={styles.matchIcon} />}
+            
+            <View style={styles.foodItemHeaderText}>
+              <Text style={styles.foodName} numberOfLines={1}>
+                {item.name}
+              </Text>
+              {sourceBadge}
+            </View>
+          </View>
+          
+          {item.brand && <Text style={styles.brandName}>{item.brand}</Text>}
+          
+          <View style={styles.itemMacroRow}>
+            <Text style={[
+              styles.macroValue, 
+              item.ketoRating === 'Keto-Friendly' && styles.greatValue,
+              item.ketoRating === 'Limit' && styles.limitValue,
+              item.ketoRating === 'Strictly Limit' && styles.strictlyLimit,
+              item.ketoRating === 'Avoid' && styles.avoidValue
+            ]}>
+              {carbsLabel}
+            </Text>
+            <Text style={styles.macroValue}>{item.macros.calories} cal</Text>
+            <Text style={styles.macroValue}>{item.macros.protein}g protein</Text>
+            <Text style={styles.macroValue}>{item.macros.fat}g fat</Text>
+          </View>
+          
+          <Text style={styles.servingSize}>{item.servingSize}</Text>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
   // Main screen content (conditionally dimmed if analyzing label)
   return (
     <SafeAreaView style={[styles.safeArea, isAnalyzingLabel && styles.dimmedBackground]}>
@@ -689,7 +867,7 @@ export default function TrackScreen() {
             <SearchIcon size={20} color="#888" style={styles.searchIcon} />
             <TextInput
               style={styles.searchInput}
-              placeholder={searchMode === 'ai' ? "Search for a food..." : "Search shared database..."}
+              placeholder={searchMode === 'ai' ? "Search for a food..." : "Search community foods..."}
               placeholderTextColor="#999"
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -719,18 +897,18 @@ export default function TrackScreen() {
         
         {/* Search Mode Toggle */}
         <View style={styles.searchModeContainer}>
-          <Text style={[styles.searchModeLabel, searchMode === 'ai' ? styles.activeModeLabel : {}]}>AI</Text>
-          <Switch
-            trackColor={{ false: "#3498db", true: "#2ecc71" }}
-            thumbColor={"#fff"}
-            ios_backgroundColor="#3498db"
-            onValueChange={toggleSearchMode}
-            value={searchMode === 'shared'}
-            style={styles.modeSwitch}
-          />
-          <Text style={[styles.searchModeLabel, searchMode === 'shared' ? styles.activeModeLabel : {}]}>
-            <Database size={14} color={searchMode === 'shared' ? "#2ecc71" : "#666"} /> Shared
-          </Text>
+          <TouchableOpacity
+            style={[styles.searchModeButton, searchMode === 'ai' ? styles.activeButton : styles.inactiveButton]}
+            onPress={() => handleChangeSearchMode('ai')}
+          >
+            <Text style={[styles.buttonText, searchMode === 'ai' ? styles.activeButtonText : styles.inactiveButtonText]}>AI</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.searchModeButton, searchMode === 'community' ? styles.activeButton : styles.inactiveButton]}
+            onPress={() => handleChangeSearchMode('community')}
+          >
+            <Text style={[styles.buttonText, searchMode === 'community' ? styles.activeButtonText : styles.inactiveButtonText]}>Shared</Text>
+          </TouchableOpacity>
         </View>
         
         {/* Search Button */}
@@ -743,7 +921,7 @@ export default function TrackScreen() {
             <ActivityIndicator color="#FFF" />
           ) : (
             <Text style={styles.analyzeButtonText}>
-              {searchMode === 'ai' ? 'Analyze Food' : 'Search Shared Foods'}
+              {searchMode === 'ai' ? 'Analyze Food' : 'Search Community Foods'}
             </Text>
           )}
         </TouchableOpacity>
@@ -810,14 +988,14 @@ export default function TrackScreen() {
         {isLoadingSharedFoods && (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#2ecc71" />
-            <Text style={styles.loadingText}>Searching shared database...</Text>
+            <Text style={styles.loadingText}>Searching community foods...</Text>
           </View>
         )}
         
         {/* Shared Foods Results */}
         {showSharedResults && sharedFoods.length > 0 && (
           <View style={styles.sharedResultsContainer}>
-            <Text style={styles.sectionTitle}>Shared Database Results</Text>
+            <Text style={styles.sectionTitle}>Community Foods</Text>
             {sharedFoods.map((food) => (
               <TouchableOpacity 
                 key={food.id} 
@@ -826,7 +1004,13 @@ export default function TrackScreen() {
               >
                 <View style={styles.sharedFoodHeader}>
                   <Text style={styles.sharedFoodName}>{food.name}</Text>
-                  <Text style={[styles.ketoTag, styles[`keto${food.ketoRating.replace(/[- ]/g, '')}`]]}>
+                  <Text style={[
+                    styles.ketoTag, 
+                    food.ketoRating === 'Keto-Friendly' ? styles.ketoKetoFriendly : 
+                    food.ketoRating === 'Limit' ? styles.ketoLimit :
+                    food.ketoRating === 'Strictly Limit' ? styles.ketoStrictlyLimit :
+                    styles.ketoAvoid
+                  ]}>
                     {food.ketoRating}
                   </Text>
                 </View>
@@ -835,7 +1019,7 @@ export default function TrackScreen() {
                   Serving: {food.servingSize}
                 </Text>
                 
-                <View style={styles.macroRow}>
+                <View style={styles.itemMacroRow}>
                   <Text style={styles.macro}>Calories: {food.macros.calories}</Text>
                   <Text style={styles.macro}>Net Carbs: {food.macros.carbs}g</Text>
                   <Text style={styles.macro}>Protein: {food.macros.protein}g</Text>
@@ -849,7 +1033,7 @@ export default function TrackScreen() {
         {showSharedResults && sharedFoods.length === 0 && !isLoadingSharedFoods && (
           <View style={styles.emptyResultsContainer}>
             <Text style={styles.emptyResultsText}>
-              No matching foods found in the shared database.
+              No matching foods found in the community.
             </Text>
             <TouchableOpacity 
               style={styles.switchToAIButton}
@@ -934,22 +1118,39 @@ const styles = StyleSheet.create({
   },
   searchModeContainer: {
     flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 15,
+    marginTop: 10,
+  },
+  searchModeButton: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 8,
-    marginBottom: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 25,
+    borderWidth: 1.5,
+    flex: 1,
+    marginHorizontal: 5,
   },
-  searchModeLabel: {
+  activeButton: {
+    backgroundColor: '#4CAF50',
+    borderColor: '#4CAF50',
+  },
+  inactiveButton: {
+    backgroundColor: 'transparent',
+    borderColor: '#4CAF50',
+  },
+  buttonText: {
     fontSize: 14,
-    color: '#666',
-    marginHorizontal: 8,
+    fontFamily: 'Inter-Medium',
+    marginLeft: 8,
   },
-  activeModeLabel: {
-    fontWeight: 'bold',
-    color: '#000',
+  activeButtonText: {
+    color: '#FFFFFF',
   },
-  modeSwitch: {
-    transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }],
+  inactiveButtonText: {
+    color: '#4CAF50',
   },
   resultContainer: {
     marginTop: 20,
@@ -1149,7 +1350,13 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   dimmedBackground: {
-      opacity: 0.5,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    position: 'absolute', 
+    top: 0, 
+    left: 0, 
+    right: 0, 
+    bottom: 0,
+    zIndex: 5,
   },
   verificationHintContainer: {
     flexDirection: 'row',
@@ -1270,10 +1477,11 @@ const styles = StyleSheet.create({
     color: '#666',
     marginBottom: 6,
   },
-  macroRow: {
+  itemMacroRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     marginTop: 4,
+    marginBottom: 4,
   },
   macro: {
     fontSize: 12,
@@ -1356,5 +1564,119 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: 'Inter-Regular',
     color: '#555',
+  },
+  foodItem: {
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#eee',
+  },
+  foodItemContent: {
+    flex: 1,
+  },
+  foodItemHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  foodItemHeaderText: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  barcodeIcon: {
+    marginRight: 8,
+  },
+  matchIcon: {
+    marginRight: 8,
+  },
+  foodName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    flexShrink: 1,
+  },
+  brandName: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 4,
+  },
+  sourceBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#3498db',
+    borderRadius: 12,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginLeft: 8,
+  },
+  sourceBadgeText: {
+    fontSize: 11,
+    color: '#fff',
+    marginLeft: 3,
+  },
+  hideWhenAnalyzing: {
+    display: 'none',
+  },
+  strictlyLimit: {
+    color: '#e74c3c',
+    fontWeight: '600',
+  },
+  matchingBarcodeItem: {
+    borderColor: '#22c55e',
+    borderWidth: 1.5,
+    backgroundColor: '#f0fdf4',
+  },
+  macroValue: {
+    fontSize: 14,
+    color: '#555',
+    marginRight: 12,
+  },
+  greatValue: {
+    color: '#22c55e',
+    fontWeight: '600',
+  },
+  goodValue: {
+    color: '#84cc16',
+    fontWeight: '600',
+  },
+  limitValue: {
+    color: '#f59e0b',
+    fontWeight: '600',
+  },
+  avoidValue: {
+    color: '#ef4444',
+    fontWeight: '600',
+  },
+  servingSize: {
+    fontSize: 13,
+    color: '#666',
+    marginTop: 2,
+  },
+  modalView: {
+    margin: 20,
+    backgroundColor: "white",
+    borderRadius: 20,
+    padding: 35,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  searchSection: {
+    marginBottom: 16,
+  },
+  scanLine: {
+    width: '100%',
+    height: 2,
+    backgroundColor: 'red',
   },
 });

@@ -29,13 +29,6 @@ serve(async (req: Request) => {
     // --- Parse request body --- 
     console.log("Parsing request body...");
     
-    // --- DEBUGGING REMOVED ---
-    // console.log("Incoming Headers:", JSON.stringify(Object.fromEntries(req.headers.entries())));
-    // const rawBody = await req.text(); // Read body as text first
-    // console.log("Raw Incoming Body Text:", rawBody);
-    // const body = JSON.parse(rawBody); 
-    // --- END DEBUGGING REMOVED ---
-    
     const body = await req.json(); // Parse JSON directly
     const { messages, imageBase64 } = body; // Expect imageBase64 again
     
@@ -56,26 +49,31 @@ serve(async (req: Request) => {
 
     // --- Construct OpenAI Payload ---
     let payload: OpenAI.Chat.Completions.ChatCompletionCreateParams;
-    const model = "gpt-4o"; // Specify the model
+    const model = "gpt-4o"; // Use gpt-4o for all requests as it supports both text and vision
 
     if (imageBase64) {
-        console.log("Constructing payload for VISION request.");
+        console.log("Constructing payload for VISION request with gpt-4o.");
+        
         // Ensure base64 string has the correct prefix for OpenAI API
         const imageDataUri = imageBase64.startsWith('data:image') 
                              ? imageBase64 
                              : `data:image/jpeg;base64,${imageBase64}`;
 
-        // Combine text messages and image message
+        // Combine text messages and image message for gpt-4o
         const visionMessages: ChatCompletionMessageParam[] = [
             ...messages, // Include existing text messages (system, user prompt)
             {
                 role: 'user',
                 content: [
-                    // { type: "text", text: "Analyze the attached image:" }, // Optional additional text
+                    { 
+                        type: "text", 
+                        text: "Analyze this nutrition label image carefully and extract all visible nutritional information."
+                    },
                     {
                         type: "image_url",
                         image_url: {
                             url: imageDataUri,
+                            detail: "high" // Request high detail analysis for nutrition labels
                         },
                     },
                 ],
@@ -85,17 +83,19 @@ serve(async (req: Request) => {
         payload = {
             model: model,
             messages: visionMessages,
-            max_tokens: 300, // Adjust as needed
-            temperature: 0.2, // Lower temperature for more deterministic results
+            max_tokens: 500, // Increased for more detailed nutrition analysis
+            temperature: 0.1, // Lower temperature for more deterministic results
         };
+        console.log(`Using model: ${model} for image analysis with high detail setting`);
     } else {
         console.log("Constructing payload for TEXT request.");
         payload = {
             model: model,
             messages: messages,
-            max_tokens: 200, // Adjust as needed
-            temperature: 0, // Can be slightly higher for text - CHANGED to 0 for determinism
+            max_tokens: 200,
+            temperature: 0, // CHANGED to 0 for determinism
         };
+        console.log(`Using model: ${model} for regular queries`);
     }
     // --- End of Payload Construction ---
 
@@ -129,7 +129,7 @@ serve(async (req: Request) => {
       JSON.stringify({ error: error.message, details: error.stack }), // Include stack trace in details for debugging
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 500,
+        status: 200,
       }
     );
   }

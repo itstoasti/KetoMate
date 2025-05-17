@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ScrollView, Image, TextInput } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useAppContext } from '@/context/AppContext';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Picker } from '@react-native-picker/picker';
+import { useAppContext } from '@/context/AppContext';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ONBOARDING_COMPLETE_KEY } from '@/app/_layout';
 
 export default function GoalsSetup() {
   const router = useRouter();
@@ -85,6 +88,10 @@ export default function GoalsSetup() {
       
       // Update profile with the sanitized data
       await updateUserProfile(profileData);
+      
+      // Mark onboarding as complete with the new global key
+      await AsyncStorage.setItem(ONBOARDING_COMPLETE_KEY, 'true');
+      console.log(`[Goals] Onboarding completed and saved with key: ${ONBOARDING_COMPLETE_KEY}`);
       
       // Important: Wait for profile to be saved properly
       console.log("Profile updated, waiting before navigation...");

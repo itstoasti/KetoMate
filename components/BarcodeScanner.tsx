@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
-import { CameraView, useCameraPermissions, BarcodeScanningResult } from 'expo-camera';
-import { Camera, X } from 'lucide-react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Platform, Alert, Linking } from 'react-native';
+import { CameraView, useCameraPermissions, BarcodeScanningResult, Camera } from 'expo-camera';
+import { Camera as CameraIcon, X } from 'lucide-react-native';
 
 interface BarcodeScannerProps {
   onScan: (barcode: string) => void;
@@ -13,9 +13,35 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onScan, onClose }) => {
   const [scanned, setScanned] = useState(false);
 
   useEffect(() => {
-    if (!permission?.granted) {
-      requestPermission();
-    }
+    const checkPermission = async () => {
+      if (!permission?.granted) {
+        const permissionResult = await requestPermission();
+        console.log('[BarcodeScanner] Permission request result:', permissionResult.granted);
+        
+        // If permission is denied and the user has selected "Don't ask again"
+        if (!permissionResult.granted && !permissionResult.canAskAgain) {
+          Alert.alert(
+            'Camera Permission Required',
+            'KetoMate needs camera access to scan barcodes. Please enable camera permissions in your device settings.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { 
+                text: 'Open Settings', 
+                onPress: () => {
+                  if (Platform.OS === 'ios') {
+                    Linking.openURL('app-settings:');
+                  } else {
+                    Linking.openSettings();
+                  }
+                } 
+              }
+            ]
+          );
+        }
+      }
+    };
+    
+    checkPermission();
   }, [permission, requestPermission]);
 
   const handleBarCodeScanned = ({ data }: BarcodeScanningResult) => {
@@ -45,7 +71,34 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onScan, onClose }) => {
       <View style={styles.container}>
         <View style={styles.permissionContainer}>
           <Text style={styles.permissionText}>We need camera permissions to scan barcodes.</Text>
-          <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
+          <TouchableOpacity 
+            style={styles.permissionButton} 
+            onPress={async () => {
+              // Try requesting permission again
+              const result = await requestPermission();
+              
+              // If permanently denied, offer to open settings
+              if (!result.granted && !result.canAskAgain) {
+                Alert.alert(
+                  'Permission Denied',
+                  'Camera access has been denied. Please enable it in your device settings.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { 
+                      text: 'Open Settings', 
+                      onPress: () => {
+                        if (Platform.OS === 'ios') {
+                          Linking.openURL('app-settings:');
+                        } else {
+                          Linking.openSettings();
+                        }
+                      } 
+                    }
+                  ]
+                );
+              }
+            }}
+          >
             <Text style={styles.permissionButtonText}>Grant Permission</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.closeButton} onPress={onClose}>
@@ -80,7 +133,7 @@ const BarcodeScanner: React.FC<BarcodeScannerProps> = ({ onScan, onClose }) => {
             style={styles.scanAgainButton}
             onPress={() => setScanned(false)}
           >
-            <Camera size={20} color="#fff" />
+            <CameraIcon size={20} color="#fff" />
             <Text style={styles.scanAgainText}>Scan Again</Text>
           </TouchableOpacity>
         )}

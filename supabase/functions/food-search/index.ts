@@ -77,22 +77,71 @@ serve(async (req) => {
         
         // Query the shared_barcode_data table with ILIKE for fuzzy text searching
         console.log(`[food-search] Searching for: ${searchTerm}`);
-        const { data, error } = await supabase
-            .from('shared_barcode_data')
-            .select('barcode, name, serving_size, calories, carbs, protein, fat')
-            .ilike('name', `%${searchTerm}%`) // Case-insensitive pattern matching
-            .limit(20); // Limit to 20 results for performance
+        
+        // Search both tables in parallel
+        const [sharedData, customData] = await Promise.all([
+            // Query shared_barcode_data table
+            supabase
+                .from('shared_barcode_data')
+                .select('barcode, name, serving_size, calories, carbs, protein, fat')
+                .ilike('name', `%${searchTerm}%`) // Case-insensitive pattern matching
+                .limit(15), // Limit to 15 results for performance
+                
+            // Query custom_foods table for the current user
+            supabase
+                .from('custom_foods')
+                .select('id, name, brand, serving_size, calories, carbs, protein, fat')
+                .ilike('name', `%${searchTerm}%`) // Case-insensitive pattern matching
+                .eq('user_id', userId) // Only get current user's custom foods
+                .limit(10) // Limit to 10 results for performance
+        ]);
 
-        if (error) {
-            console.error("[food-search] Supabase search error:", error.message);
-            throw new Error(`Supabase search failed: ${error.message}`);
+        // Check for errors in either query
+        if (sharedData.error) {
+            console.error("[food-search] Shared foods search error:", sharedData.error.message);
+            throw new Error(`Shared foods search failed: ${sharedData.error.message}`);
+        }
+        
+        if (customData.error) {
+            console.error("[food-search] Custom foods search error:", customData.error.message);
+            throw new Error(`Custom foods search failed: ${customData.error.message}`);
         }
 
-        console.log(`[food-search] Search finished. Found ${data?.length || 0} results.`);
+        // Calculate total results
+        const sharedCount = sharedData?.data?.length || 0;
+        const customCount = customData?.data?.length || 0;
+        console.log(`[food-search] Search finished. Found ${sharedCount} shared results and ${customCount} custom results.`);
 
-        if (data && data.length > 0) {
-            // Map the results to a format similar to the Food type
-            const foodItems = data.map(item => ({
+        // Combine the results
+        let foodItems = [];
+        
+        // First add custom foods results (if any)
+        if (customData?.data && customData.data.length > 0) {
+            // Map custom foods to the Food format
+            const customItems = customData.data.map(item => ({
+                id: item.id || `custom_${Date.now()}`,
+                name: item.name,
+                brand: item.brand || 'Custom Food', 
+                servingSize: item.serving_size || 'N/A',
+                macros: {
+                    calories: item.calories || 0,
+                    carbs: item.carbs || 0,
+                    protein: item.protein || 0,
+                    fat: item.fat || 0,
+                },
+                source: 'custom', // Mark as custom source
+                ketoRating: determineKetoRating(item.carbs || 0),
+                dateAdded: new Date().toISOString(),
+                description: 'Your custom food entry.',
+            }));
+            
+            foodItems = [...customItems];
+        }
+        
+        // Then add shared data results (if any)
+        if (sharedData?.data && sharedData.data.length > 0) {
+            // Map the shared results to the Food format
+            const sharedItems = sharedData.data.map(item => ({
                 id: `shared_${item.barcode}`,
                 name: item.name,
                 brand: 'User Submitted',
@@ -104,11 +153,16 @@ serve(async (req) => {
                     fat: item.fat || 0,
                 },
                 barcode: item.barcode,
+                source: 'user', // Mark as user source
                 ketoRating: determineKetoRating(item.carbs || 0),
                 dateAdded: new Date().toISOString(),
                 description: 'Data from shared user database.',
             }));
+            
+            foodItems = [...foodItems, ...sharedItems];
+        }
 
+        if (foodItems.length > 0) {
             return new Response(JSON.stringify({ 
                 status: 'success',
                 count: foodItems.length,
@@ -147,8 +201,8 @@ serve(async (req) => {
 
 // Helper function to determine keto rating based on carbs
 function determineKetoRating(netCarbs: number): 'Keto-Friendly' | 'Limit' | 'Strictly Limit' | 'Avoid' {
-    if (netCarbs <= 5) return 'Keto-Friendly';
+    if (netCarbs <= 6) return 'Keto-Friendly';
     if (netCarbs <= 10) return 'Limit';
-    if (netCarbs <= 15) return 'Strictly Limit';
+    if (netCarbs <= 20) return 'Strictly Limit';
     return 'Avoid';
 } 

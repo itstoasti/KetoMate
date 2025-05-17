@@ -41,7 +41,7 @@ const FoodCard: React.FC<FoodCardProps> = ({ food, onPress, isFavorite, onToggle
           style={styles.favoriteButton}
           onPress={onToggleFavorite} 
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
+    >
           <Star 
             size={24} 
             color={isFavorite ? "#FFC107" : "#ccc"} 

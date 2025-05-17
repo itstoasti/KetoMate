@@ -81,6 +81,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     console.log("[AppContext Auth Effect] Running..."); // Log effect execution
 
+    // Add safety timeout to prevent infinite loading
+    const safetyTimeout = setTimeout(() => {
+      if (isLoading) {
+        console.log("[AppContext] Safety timeout triggered - forcing loading state to false");
+        setIsLoading(false);
+      }
+    }, 10000); // 10 seconds safety timeout
+
     const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       console.log(`[AppContext] Auth State Change Event: ${_event} ${session ? 'Session Active' : 'No Session'}`);
       setSession(session);
@@ -107,17 +115,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
     });
 
-    // Set initial loading state
-    // setIsLoading(true); // Moved initial setIsLoading(true) to useState initializer
-
     // Check initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
         console.log(`[AppContext] Initial session: ${session ? 'Found' : 'Not Found'}`);
         setSession(session);
         setUser(session?.user ?? null);
         if (session?.user) {
-          // Initial load only if user exists and not already loading
-          if(!isLoading) { // Check isLoading flag
+          // Initial load only if user exists and we are not in the process of signing out.
+          // isLoading check can also be here if desired, but isSigningOut is key for this specific issue.
+          if (!isSigningOut) { 
             loadData(session.user.id);
           }
         } else {
@@ -131,9 +137,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return () => {
       console.log("[AppContext] Cleaning up auth listener.");
       authListener?.subscription.unsubscribe();
+      clearTimeout(safetyTimeout);
     };
     // Ensure isSigningOut is included if it influences logic inside
-  }, [isSigningOut]); // Add isSigningOut if needed by logic inside
+  }, []); // REMOVED isSigningOut from dependency array
 
   const resetStateToDefaults = () => {
       setUserProfile(null);
@@ -146,6 +153,48 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setIsLoading(false); 
   };
 
+  const calculateRemainingMacros = useCallback((total: Macro, limit: Macro): Macro => {
+    return {
+      carbs: Math.max(0, limit.carbs - total.carbs),
+      protein: Math.max(0, limit.protein - total.protein),
+      fat: Math.max(0, limit.fat - total.fat),
+      calories: Math.max(0, limit.calories - total.calories)
+    };
+  }, []);
+
+  // Function for calculating macros by day  
+  const calculateMacrosForDay = useCallback((userMeals: Meal[], date: string, profile: UserProfile | null): DailyMacros => {
+    // Filter meals for the specified date
+    const mealsForDay = userMeals.filter(meal => meal.date === date);
+    
+    // Calculate total macros from all meals for this day
+    const totalMacros = mealsForDay.reduce(
+      (total, meal) => {
+        return {
+          carbs: total.carbs + (meal.macros?.carbs || 0),
+          protein: total.protein + (meal.macros?.protein || 0),
+          fat: total.fat + (meal.macros?.fat || 0),
+          calories: total.calories + (meal.macros?.calories || 0)
+        };
+      },
+      { carbs: 0, protein: 0, fat: 0, calories: 0 }
+    );
+    
+    // Get macro limits from user profile or use defaults
+    const limitMacros = profile?.dailyMacroLimit || DEFAULT_DAILY_MACROS.limit;
+    
+    // Calculate remaining macros
+    const remainingMacros = calculateRemainingMacros(totalMacros, limitMacros);
+    
+    return {
+      date,
+      total: totalMacros,
+      limit: limitMacros,
+      remaining: remainingMacros,
+      meals: mealsForDay // Use the array of meal objects directly
+    };
+  }, [calculateRemainingMacros]);
+
   const loadData = async (userId: string | undefined) => {
     if (!userId) {
       console.log("[AppContext] loadData called without userId. Resetting state.");
@@ -155,7 +204,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
     
     console.log(`[AppContext] loadData - START for user: ${userId}`); // Log start
-    setIsLoading(true); 
+    setIsLoading(true);
+    
+    // Add safety timeout specifically for loadData function
+    const dataLoadTimeout = setTimeout(() => {
+      console.log("[AppContext] loadData timeout reached - forcing completion");
+      setIsLoading(false);
+    }, 8000); // 8 seconds timeout for data loading
+    
     let loadedProfile: UserProfile | null = null; // Define loadedProfile earlier
     let appMeals: Meal[] = []; // Define appMeals earlier
     let appProfile: UserProfile | null = null; // Define appProfile earlier
@@ -164,22 +220,75 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       console.log(`[AppContext] loadData - Proceeding with fetch for user: ${userId}`);
 
       console.log("[AppContext] loadData - Before Promise.all"); // Log before Promise.all
-      const [profileResult, mealsResult, weightResult, favoritesResult] = await Promise.all([
-        supabase.from('user_profiles').select('user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit').eq('user_id', userId).single(),
-        supabase.from('meals').select('*').eq('user_id', userId),
-        supabase.from('weight_history')
-            .select('id, user_id, entry_date, weight_kg') // Corrected select columns
-            .eq('user_id', userId)
-            .order('entry_date', { ascending: false }),
-        supabase.from('favorite_foods').select('food_data').eq('user_id', userId) // Assuming 'food_data' is the correct column
-      ]);
-      console.log("[AppContext] loadData - After Promise.all"); // Log after Promise.all
+      
+      // Perform database queries with try-catch instead of promise catch chaining
+      let profileResult, mealsResult, weightResult, favoritesResult;
+      
+      try {
+        // Profile query
+        profileResult = await supabase
+          .from('user_profiles')
+          .select('id:user_id, name, weight, height, goal, activity_level, daily_macro_limit, daily_calories_limit, height_unit, weight_unit')
+          .eq('user_id', userId)
+          .single();
+      } catch (error) {
+        console.error("[AppContext] Error fetching profile:", error);
+        profileResult = { data: null, error };
+      }
+      
+      try {
+        // Meals query
+        mealsResult = await supabase
+          .from('meals')
+          .select('id, name, foods, date, time, type, macros, created_at') // Explicitly list fields, including time
+          .eq('user_id', userId);
+      } catch (error) {
+        console.error("[AppContext] Error fetching meals:", error);
+        mealsResult = { data: [], error };
+      }
+      
+      try {
+        // Weight history query
+        weightResult = await supabase
+          .from('weight_history')
+          .select('id, entry_date, weight_kg') // Removed 'notes' from select
+          .eq('user_id', userId)
+          .order('entry_date', { ascending: false });
+      } catch (error) {
+        console.error("[AppContext] Error fetching weight history:", error);
+        weightResult = { data: [], error };
+      }
+      
+      try {
+        // Favorites query
+        favoritesResult = await supabase
+          .from('favorite_foods')
+          .select('food_data')
+          .eq('user_id', userId);
+      } catch (error) {
+        console.error("[AppContext] Error fetching favorites:", error);
+        favoritesResult = { data: [], error };
+      }
+      
+      console.log("[AppContext] loadData - After individual queries"); // Log after queries
 
-      // Log results individually (optional but helpful)
-      console.log("[AppContext] loadData - Profile Result:", profileResult.status, profileResult.error ? profileResult.error.message : `Data: ${!!profileResult.data}`);
-      console.log("[AppContext] loadData - Meals Result:", mealsResult.status, mealsResult.error ? mealsResult.error.message : `Data Count: ${mealsResult.data?.length ?? 0}`);
-      console.log("[AppContext] loadData - Weight Result:", weightResult.status, weightResult.error ? weightResult.error.message : `Data Count: ${weightResult.data?.length ?? 0}`);
-      console.log("[AppContext] loadData - Favorites Result:", favoritesResult.status, favoritesResult.error ? favoritesResult.error.message : `Data Count: ${favoritesResult.data?.length ?? 0}`);
+      // Log results individually with proper error type handling
+      console.log("[AppContext] loadData - Profile Result:", profileResult.status, 
+        profileResult.error && typeof profileResult.error === 'object' && 'message' in profileResult.error 
+          ? profileResult.error.message 
+          : `Data: ${!!profileResult.data}`);
+      console.log("[AppContext] loadData - Meals Result:", mealsResult.status, 
+        mealsResult.error && typeof mealsResult.error === 'object' && 'message' in mealsResult.error 
+          ? mealsResult.error.message 
+          : `Data Count: ${mealsResult.data?.length ?? 0}`);
+      console.log("[AppContext] loadData - Weight Result:", weightResult.status, 
+        weightResult.error && typeof weightResult.error === 'object' && 'message' in weightResult.error 
+          ? weightResult.error.message 
+          : `Data Count: ${weightResult.data?.length ?? 0}`);
+      console.log("[AppContext] loadData - Favorites Result:", favoritesResult.status, 
+        favoritesResult.error && typeof favoritesResult.error === 'object' && 'message' in favoritesResult.error 
+          ? favoritesResult.error.message 
+          : `Data Count: ${favoritesResult.data?.length ?? 0}`);
 
 
       // --- Initialize Local State (can be kept here or moved) ---
@@ -202,19 +311,18 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             // Handle error appropriately, maybe show an alert or use defaults
          } else if (profileResult.data) {
             console.log("[AppContext] loadData - Processing profile data...");
-            const dbProfile = profileResult.data as any;
+            const fetchedProfile = profileResult.data as any; // Keep as any for raw DB data
              appProfile = { // Assign to the higher-scoped appProfile
-                id: uuidv4(), // Generate client-side ID
-                user_id: dbProfile.user_id,
-                name: dbProfile.name,
-                weight: dbProfile.weight,
-                height: dbProfile.height,
-                weightUnit: dbProfile.weight_unit || 'lb', // Default to lb
-                heightUnit: dbProfile.height_unit || 'ft', // Default to ft
-                goal: dbProfile.goal || 'maintain', // Provide default
-                activityLevel: dbProfile.activity_level || 'moderate', // Provide default
-                dailyMacroLimit: dbProfile.daily_macro_limit || { carbs: 20, protein: 120, fat: 150, calories: 1800 }, // Provide default
-                dailyCalorieLimit: dbProfile.daily_calories_limit || 1800, // Provide default
+                id: fetchedProfile.id, // This is now the aliased user_id
+                name: fetchedProfile.name,
+                weight: fetchedProfile.weight,
+                height: fetchedProfile.height,
+                weightUnit: fetchedProfile.weight_unit || 'lb',
+                heightUnit: fetchedProfile.height_unit || 'ft',
+                goal: fetchedProfile.goal || 'maintain',
+                activityLevel: fetchedProfile.activity_level || 'moderate',
+                dailyMacroLimit: fetchedProfile.daily_macro_limit || { carbs: 20, protein: 120, fat: 150, calories: 1800 },
+                dailyCalorieLimit: fetchedProfile.daily_calories_limit || 1800,
             };
             setUserProfile(appProfile);
             console.log("[AppContext] loadData - Profile processed and set.");
@@ -229,8 +337,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
              // For now, let's just set a null or default profile state if creation isn't implemented
              const defaultProfile: UserProfile = {
                 ...DEFAULT_USER_PROFILE,
-                id: uuidv4(), // Generate a client-side ID
-                user_id: userId
+                id: userId, // Use userId for the id field
              };
              setUserProfile(defaultProfile);
              appProfile = defaultProfile;
@@ -247,15 +354,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         } else {
         const dbMeals = mealsResult.data || [];
             console.log(`[AppContext] loadData - Processing ${dbMeals.length} meals...`);
-             appMeals = dbMeals.map((dbMeal: any) => ({ // Assign to the higher-scoped appMeals
+             appMeals = dbMeals.map((dbMeal: any) => ({ 
                 id: dbMeal.id,
-                user_id: dbMeal.user_id,
                 name: dbMeal.name,
-                date: dbMeal.date, // Assuming date is stored correctly
-                type: dbMeal.meal_type || 'snack', // Map meal_type to type, provide default
-                foods: dbMeal.foods || [], // Assuming foods is stored correctly, provide default
-                macros: dbMeal.macros || { carbs: 0, protein: 0, fat: 0, calories: 0 }, // Provide default
-                created_at: dbMeal.created_at
+                date: dbMeal.date, 
+                time: dbMeal.time, // Added mapping for time
+                type: dbMeal.meal_type || 'snack', 
+                foods: dbMeal.foods || [], 
+                macros: dbMeal.macros || { carbs: 0, protein: 0, fat: 0, calories: 0 }, 
         })) as Meal[];
             setMeals(appMeals);
             console.log("[AppContext] loadData - Meals processed and set.");
@@ -269,15 +375,25 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             console.error("[AppContext] loadData - Error fetching weight history:", weightResult.error);
         } else if (weightResult.data) {
            console.log(`[AppContext] loadData - Processing ${weightResult.data.length} weight entries...`);
-          appWeightHistory = weightResult.data.map((dbEntry: any) => ({
-              id: dbEntry.id,
-              user_id: dbEntry.user_id,
-              date: dbEntry.entry_date, // Map entry_date to date
-              weight: dbEntry.weight_kg, // Map weight_kg to weight
-               unit: appProfile?.weightUnit || 'lb' // Use loaded profile
-          })) as WeightEntry[];
+           // Get user's preferred weight unit
+           const preferredUnit = appProfile?.weightUnit || 'lb';
+           
+          appWeightHistory = weightResult.data.map((dbEntry: any) => {
+              // Convert weight from kg to lb if the preferred unit is lb
+              let weightValue = dbEntry.weight_kg;
+              if (preferredUnit === 'lb') {
+                  weightValue = dbEntry.weight_kg * 2.20462; // Convert kg to lb
+              }
+              
+              return {
+                  id: dbEntry.id,
+                  date: dbEntry.entry_date, 
+                  weight: weightValue, 
+                  unit: preferredUnit,
+              };
+          }) as WeightEntry[];
           
-           setWeightHistory(appWeightHistory.sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))); // Use parseISO for correct date sorting
+           setWeightHistory(appWeightHistory.sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date))));
            console.log("[AppContext] loadData - Weight history processed and set.");
         }
       } catch (e) { console.error(`[AppContext] loadData - Error processing weight history for ${userId}:`, e); }
@@ -321,20 +437,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       // Optionally reset state or set specific error state here
       // resetStateToDefaults(); // Consider if resetting is the desired behavior on error
     } finally {
+      clearTimeout(dataLoadTimeout);
       console.log(`[AppContext] loadData - FINALLY block reached for user: ${userId}. Setting isLoading to false.`); // Log finally block
       setIsLoading(false);
-       console.log(`[AppContext] loadData - END for user: ${userId}, isLoading is now false.`); // Log end
+      console.log(`[AppContext] loadData - END for user: ${userId}, isLoading is now false.`); // Log end
     }
   };
-
-  const calculateRemainingMacros = useCallback((total: Macro, limit: Macro): Macro => {
-    return {
-      carbs: Math.max(0, limit.carbs - total.carbs),
-      protein: Math.max(0, limit.protein - total.protein),
-      fat: Math.max(0, limit.fat - total.fat),
-      calories: Math.max(0, limit.calories - total.calories)
-    };
-  }, []);
 
   const addFood = useCallback((food: Food) => {
     setFoods(prev => [...prev, food]);
@@ -420,73 +528,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [user?.id, meals, userProfile, calculateMacrosForDay]);
 
-  const addWeightEntry = useCallback(async (entryData: Omit<WeightEntry, 'id' | 'date'>) => {
-    if (!user?.id) {
-      console.error("[AppContext] Cannot add weight entry: No user logged in.");
-      Alert.alert("Error", "You must be logged in to add a weight entry.");
-      return;
-    }
-
-    // Convert weight to kg if necessary and prepare DB payload
-    let weightInKg = entryData.weight;
-    if (entryData.unit === 'lb') {
-        weightInKg = entryData.weight * 0.453592; // Convert lbs to kg
-    }
-
-    const newEntryPayload = {
-      user_id: user.id,
-      entry_date: new Date().toISOString(), // Map app 'date' to DB 'entry_date'
-      weight_kg: weightInKg // Send the weight in kg
-      // Do not send 'unit' or 'weight_unit' as the DB column doesn't exist
-    };
-    
-    // Log the payload being sent
-    console.log("[AppContext] Attempting to save weight entry payload:", JSON.stringify(newEntryPayload, null, 2)); 
-    
-    const { data, error } = await supabase
-        .from('weight_history') // Correct table name
-        .insert(newEntryPayload) // Use correctly mapped payload
-        .select('id, user_id, entry_date, weight_kg') // Select specific columns
-        .single();
-
-    if (error) {
-        // Log the full error object, not just message
-        console.error("[AppContext] Error saving weight entry:", JSON.stringify(error, null, 2)); 
-        // Display a generic message or use error.message if it exists, otherwise provide a fallback
-        const errorMessage = error?.message || "An unknown error occurred."; 
-        Alert.alert("Error", `Could not save weight entry: ${errorMessage}`);
-    } else if (data) {
-        console.log("[AppContext] Weight entry saved successfully:", data.id);
-        // Map the returned DB data back to the app state format
-        const savedDbEntry = data as any;
-        const savedAppEntry: WeightEntry = {
-            id: savedDbEntry.id,
-            user_id: savedDbEntry.user_id,
-            date: savedDbEntry.entry_date, // Map entry_date back to date
-            weight: savedDbEntry.weight_kg, // Map weight_kg back to weight
-            unit: userProfile?.weightUnit || 'lb' // Assign unit based on profile
-        };
-
-        const updatedHistory = [savedAppEntry, ...weightHistory]
-            .sort((a, b) => compareDesc(new Date(a.date), new Date(b.date)));
-        setWeightHistory(updatedHistory);
-
-        // Update profile weight if this is the newest entry
-    setUserProfile(prevProfile => {
-        if (!prevProfile) return null;
-            // Update profile state ONLY if the new KG value is different
-            // The context state should always store weight in KG.
-            if (prevProfile.weight !== savedAppEntry.weight) { 
-                return { ...prevProfile, weight: savedAppEntry.weight }; // Store KG value
-            }
-            return prevProfile; 
-        });
-        // Note: Removed the separate call to updateUserProfile here to avoid potential loops
-        //       and because we don't need to save the weight *back* to the profile table usually.
-        //       If profile weight update IS desired, call updateUserProfile({ weight: currentWeightInProfileUnits });
-    }
-  }, [user?.id, weightHistory, userProfile, calculateRemainingMacros]); // Removed updateUserProfile from deps
-
   const updateUserProfile = useCallback(async (profileData: Partial<UserProfile>) => {
     if (!user?.id) {
       console.error("[AppContext] Cannot update profile: No user logged in.");
@@ -496,10 +537,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     console.log("[AppContext] updateUserProfile called with:", profileData);
     
-    // Build payload for Supabase (snake_case)
     const supabasePayload: any = {};
     
-    // Map all the camelCase profile properties to snake_case database columns
     if (profileData.name !== undefined) supabasePayload.name = profileData.name;
     if (profileData.weight !== undefined) supabasePayload.weight = profileData.weight;
     if (profileData.height !== undefined) supabasePayload.height = profileData.height;
@@ -510,11 +549,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (profileData.heightUnit !== undefined) supabasePayload.height_unit = profileData.heightUnit;
     if (profileData.weightUnit !== undefined) supabasePayload.weight_unit = profileData.weightUnit;
     
-    // Add user ID if it's missing
-    supabasePayload.user_id = user.id;
-    // --- End Build Payload ---
-
-    // Check if there's anything left to update
     if (Object.keys(supabasePayload).length === 0) {
         console.warn("[AppContext] updateUserProfile called with no valid data to update.");
         return;
@@ -523,95 +557,155 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     console.log("[AppContext] Attempting to update profile in Supabase with explicit payload:", supabasePayload);
     
     try {
-      // First check if the profile exists - using user_id instead of id
       const { data: existingProfile, error: checkError } = await supabase
       .from('user_profiles')
-        .select('user_id') // Changed from 'id' to 'user_id' since id doesn't exist in the table
+        .select('user_id')
       .eq('user_id', user.id) 
       .single();
 
       if (checkError && checkError.code !== 'PGRST116') {
-        // If it's an error other than "no rows returned", throw it
         throw checkError;
       }
       
       let dataToUpdateStateWith;
+      let profileForStateUpdate: UserProfile;
       
       if (!existingProfile) {
-        // Profile doesn't exist, create a new one with defaults plus provided data
-        // Need to explicitly convert camelCase to snake_case for all fields here
         const newProfileData = {
-          name: DEFAULT_USER_PROFILE.name,
-          weight: DEFAULT_USER_PROFILE.weight,
-          height: DEFAULT_USER_PROFILE.height,
-          goal: DEFAULT_USER_PROFILE.goal,
-          activity_level: DEFAULT_USER_PROFILE.activityLevel, // Convert camelCase to snake_case
-          daily_macro_limit: DEFAULT_USER_PROFILE.dailyMacroLimit,
-          daily_calories_limit: DEFAULT_USER_PROFILE.dailyCalorieLimit,
-          height_unit: DEFAULT_USER_PROFILE.heightUnit,
-          weight_unit: DEFAULT_USER_PROFILE.weightUnit,
+          name: supabasePayload.name ?? DEFAULT_USER_PROFILE.name,
+          weight: supabasePayload.weight ?? DEFAULT_USER_PROFILE.weight,
+          height: supabasePayload.height ?? DEFAULT_USER_PROFILE.height,
+          goal: supabasePayload.goal ?? DEFAULT_USER_PROFILE.goal,
+          activity_level: supabasePayload.activity_level ?? DEFAULT_USER_PROFILE.activityLevel,
+          daily_macro_limit: supabasePayload.daily_macro_limit ?? DEFAULT_USER_PROFILE.dailyMacroLimit,
+          daily_calories_limit: supabasePayload.daily_calories_limit ?? DEFAULT_USER_PROFILE.dailyCalorieLimit,
+          height_unit: supabasePayload.height_unit ?? DEFAULT_USER_PROFILE.heightUnit,
+          weight_unit: supabasePayload.weight_unit ?? DEFAULT_USER_PROFILE.weightUnit,
           user_id: user.id,
-          ...supabasePayload,
         };
         
         console.log("[AppContext] No existing profile found, creating new one:", newProfileData);
-        // Insert without selecting data back and without .single()
         const { error: insertError } = await supabase
           .from('user_profiles')
           .insert(newProfileData);
         
         if (insertError) throw insertError;
-        dataToUpdateStateWith = newProfileData; // Use the data we sent for state update
+        profileForStateUpdate = {
+            id: user.id, // Use the actual user_id as the profile ID
+            name: newProfileData.name,
+            weight: newProfileData.weight,
+            height: newProfileData.height,
+            goal: newProfileData.goal,
+            activityLevel: newProfileData.activity_level,
+            dailyMacroLimit: newProfileData.daily_macro_limit,
+            dailyCalorieLimit: newProfileData.daily_calories_limit,
+            heightUnit: newProfileData.height_unit,
+            weightUnit: newProfileData.weight_unit,
+        };
       } else {
-        // Profile exists, just update it
         console.log("[AppContext] Updating existing profile");
-        // Update without selecting data back and without .single()
         const { error: updateError } = await supabase
           .from('user_profiles')
           .update(supabasePayload)
           .eq('user_id', user.id);
           
         if (updateError) throw updateError;
-        // Use the userProfile from state and merge the updates we sent
-        dataToUpdateStateWith = { ...userProfile, ...supabasePayload }; 
+        // Construct the updated profile for state based on current and new data
+        const currentProfile = userProfile || { ...DEFAULT_USER_PROFILE, id: user.id }; // Fallback if userProfile is null
+        profileForStateUpdate = {
+            ...currentProfile, // Spread existing profile data first
+            id: user.id,      // Ensure ID is the user_id
+            name: supabasePayload.name ?? currentProfile.name,
+            weight: supabasePayload.weight ?? currentProfile.weight,
+            height: supabasePayload.height ?? currentProfile.height,
+            goal: supabasePayload.goal ?? currentProfile.goal,
+            activityLevel: supabasePayload.activity_level ?? currentProfile.activityLevel,
+            dailyMacroLimit: supabasePayload.daily_macro_limit ?? currentProfile.dailyMacroLimit,
+            dailyCalorieLimit: supabasePayload.daily_calories_limit ?? currentProfile.dailyCalorieLimit,
+            heightUnit: supabasePayload.height_unit ?? currentProfile.heightUnit,
+            weightUnit: supabasePayload.weight_unit ?? currentProfile.weightUnit,
+        };
       }
       
-      // No need to process returned data as we didn't select it
-      
-      if (dataToUpdateStateWith) {
         console.log("[AppContext] Profile updated/created successfully in Supabase. Updating local state...");
-        // Map the snake_case data we have to camelCase for the app state
-        const dbProfile = dataToUpdateStateWith as any;
-        const appProfile: UserProfile = {
-            // Generate a new ID for client-side only since the table doesn't have an ID column
-            id: userProfile?.id || uuidv4(), // This ID is only for client state tracking
-            user_id: dbProfile.user_id,
-            name: dbProfile.name || DEFAULT_USER_PROFILE.name,
-            weight: dbProfile.weight || DEFAULT_USER_PROFILE.weight,
-            height: dbProfile.height || DEFAULT_USER_PROFILE.height,
-            goal: dbProfile.goal || DEFAULT_USER_PROFILE.goal,
-            activityLevel: dbProfile.activity_level || DEFAULT_USER_PROFILE.activityLevel,
-            dailyMacroLimit: dbProfile.daily_macro_limit || DEFAULT_USER_PROFILE.dailyMacroLimit,
-            dailyCalorieLimit: dbProfile.daily_calories_limit || DEFAULT_USER_PROFILE.dailyCalorieLimit,
-            heightUnit: dbProfile.height_unit || DEFAULT_USER_PROFILE.heightUnit,
-            weightUnit: dbProfile.weight_unit || DEFAULT_USER_PROFILE.weightUnit
-        };
-        
-        // Update local state with the *mapped* camelCase data
-        setUserProfile(appProfile); 
+      setUserProfile(profileForStateUpdate); 
 
-        // Recalculate today's macros using the *mapped* camelCase data
         setTodayMacros(prev => ({
         ...prev,
-            limit: appProfile.dailyMacroLimit, // Use mapped appProfile
-            remaining: calculateRemainingMacros(prev.total, appProfile.dailyMacroLimit) // Use mapped appProfile
+        limit: profileForStateUpdate.dailyMacroLimit,
+        remaining: calculateRemainingMacros(prev.total, profileForStateUpdate.dailyMacroLimit)
         }));
-      }
+      
     } catch (error) {
       console.error("[AppContext] Error updating profile:", error);
       Alert.alert("Error", `Could not update profile: ${(error as any)?.message || 'Unknown error'}`);
     }
-  }, [user?.id, calculateRemainingMacros]);
+  }, [user?.id, userProfile, calculateRemainingMacros]);
+
+  const addWeightEntry = useCallback(async (entryData: Omit<WeightEntry, 'id' | 'date'>) => {
+    if (!user?.id) {
+        Alert.alert("Error", "You must be logged in to add weight entries.");
+        return;
+    }
+    
+    let weightForDb = entryData.weight;
+    if (entryData.unit === 'lb') {
+        weightForDb = entryData.weight * 0.453592; 
+    }
+
+    const newEntryPayload = {
+        user_id: user.id, 
+        entry_date: new Date().toISOString(), 
+        weight_kg: weightForDb,             
+        // unit: entryData.unit, // unit column doesn't exist
+        // notes: entryData.notes, // notes column doesn't exist
+    };
+    
+    const { data, error } = await supabase
+        .from('weight_history')
+        .insert(newEntryPayload)
+        .select('id, entry_date, weight_kg') // Removed 'notes' from select
+        .single();
+
+    if (error) {
+        console.error("[AppContext] Error saving weight entry:", error.message);
+        Alert.alert("Error", `Could not save weight entry: ${error.message}`);
+    } else if (data) {
+        console.log("[AppContext] Weight entry saved successfully:", data.id);
+        const anyData = data as any;
+        const savedDbEntry = {
+            id: anyData.id as string,
+            entry_date: anyData.entry_date as string, 
+            weight_kg: anyData.weight_kg as number, 
+            // unit: anyData.unit as ('kg' | 'lb'), 
+            // notes: anyData.notes as (string | undefined),
+        };
+
+        const savedAppEntry: WeightEntry = { 
+            id: savedDbEntry.id,
+            date: savedDbEntry.entry_date, 
+            weight: savedDbEntry.weight_kg, 
+            unit: entryData.unit, 
+            notes: entryData.notes // Keep notes from input for app state, even if not saved to DB
+        };
+
+        setWeightHistory(currentWeightHistory => { 
+            const newHistory = [savedAppEntry, ...currentWeightHistory].sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)));
+            
+            if (userProfile) { // Check if userProfile exists
+              // Check if the new entry is the latest one and differs from profile
+              if (newHistory.length > 0 && newHistory[0].id === savedAppEntry.id) {
+                if (userProfile.weight !== savedAppEntry.weight || userProfile.weightUnit !== savedAppEntry.unit) {
+                    updateUserProfile({ weight: savedAppEntry.weight, weightUnit: savedAppEntry.unit });
+                }
+              }
+            }
+            return newHistory;
+        });
+        
+        Alert.alert("Success", "Weight entry saved!");
+    }
+  }, [user?.id, userProfile, updateUserProfile]);
 
   const addMessageToConversation = useCallback((conversationId: string, message: { role: 'user' | 'assistant'; content: string }) => {
     console.warn("[AppContext] addMessageToConversation called, but 'conversations' are not currently persisted to Supabase.");
@@ -712,9 +806,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
     
+    // Always convert to kg for database storage
     const updatePayload = { 
-        weight: updatedWeightKg, 
-        date: new Date().toISOString()
+        weight_kg: updatedWeightKg, // DB column is weight_kg
+        entry_date: new Date().toISOString() // DB column is entry_date
     };
 
     console.log(`[AppContext] Attempting to update weight entry ${entryId} in Supabase...`);
@@ -723,30 +818,49 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         .update(updatePayload)
         .eq('id', entryId)
         .eq('user_id', user.id)
-        .select()
+        .select('id, entry_date, weight_kg')
         .single();
 
     if (error) {
         console.error(`[AppContext] Error updating weight entry ${entryId}:`, error);
-        Alert.alert("Error", `Could not update weight entry: ${error.message || error}`);
+        Alert.alert("Error", `Could not update weight entry: ${error.message || 'Unknown error'}`);
     } else if (data) {
         console.log(`[AppContext] Weight entry ${entryId} updated successfully.`);
-        const updatedEntry = data as WeightEntry;
-    const updatedHistory = weightHistory.map(entry => 
-            entry.id === entryId ? updatedEntry : entry
-    );
-    updatedHistory.sort((a, b) => compareDesc(new Date(a.date), new Date(b.date)));
-    setWeightHistory(updatedHistory);
+        
+        // Get the user's preferred weight unit
+        const preferredUnit = userProfile?.weightUnit || 'lb';
+        
+        // Map DB response to app's WeightEntry type, respecting the user's unit preference
+        const dbEntry = data as any;
+        
+        // Convert weight from kg to lb if the preferred unit is lb
+        let weightValue = dbEntry.weight_kg;
+        if (preferredUnit === 'lb') {
+            weightValue = dbEntry.weight_kg * 2.20462; // Convert kg to lb
+        }
+        
+        const updatedAppEntry: WeightEntry = {
+            id: dbEntry.id,
+            date: dbEntry.entry_date,
+            weight: weightValue,
+            unit: preferredUnit,
+            // notes: undefined
+        };
 
-    setUserProfile(prevProfile => {
-      if (!prevProfile) return null;
-            if (updatedHistory.length > 0 && updatedHistory[0].id === entryId && userProfile) {
-                 if (userProfile.weight !== updatedEntry.weight) {
-                     updateUserProfile({ weight: updatedEntry.weight });
-                 }
-      }
-      return prevProfile;
-    });
+        const updatedHistory = weightHistory.map(entry => 
+            entry.id === entryId ? updatedAppEntry : entry
+        );
+        updatedHistory.sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)));
+        setWeightHistory(updatedHistory);
+
+        // Update user profile if this was the latest weight entry
+        if (userProfile && updatedHistory.length > 0 && updatedHistory[0].id === entryId) {
+            if (userProfile.weight !== updatedAppEntry.weight) {
+                // Just update weight, preserve the user's existing weight unit
+                updateUserProfile({ weight: updatedAppEntry.weight });
+            }
+        }
+        Alert.alert("Success", "Weight entry updated!");
     }
  }, [user?.id, weightHistory, userProfile, updateUserProfile]);
 
@@ -849,69 +963,41 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   // --- End Favorite Functions ---
 
-  const calculateMacrosForDay = useCallback((allMeals: Meal[], date: string, profile: UserProfile | null): DailyMacros => {
-    console.log(`[calculateMacrosForDay] Calculating for date: ${date}. Received ${allMeals.length} total meals.`);
-    const targetDate = parseISO(date); // Parse target date once
-    const todaysMeals = allMeals.filter(meal => {
-        if (!meal.date) return false;
-        try {
-            const mealDate = parseISO(meal.date);
-            const sameDay = isSameDay(mealDate, targetDate);
-            // console.log(`[calculateMacrosForDay] Comparing meal ${meal.id} (${meal.date}) to ${date}: ${sameDay}`); // Verbose log if needed
-            return sameDay;
-        } catch (e) {
-            console.warn(`[calculateMacrosForDay] Error parsing meal date: ${meal.date}`, e);
-            return false;
-        }
-    });
-    console.log(`[calculateMacrosForDay] Found ${todaysMeals.length} meals for ${date}:`, todaysMeals.map(m => m.id));
-    
-    const total: Macro = todaysMeals.reduce((acc, meal) => ({
-      carbs: acc.carbs + (meal.macros?.carbs ?? 0),
-      protein: acc.protein + (meal.macros?.protein ?? 0),
-      fat: acc.fat + (meal.macros?.fat ?? 0),
-      calories: acc.calories + (meal.macros?.calories ?? 0),
-    }), { carbs: 0, protein: 0, fat: 0, calories: 0 });
-
-    const limit = profile?.dailyMacroLimit ?? DEFAULT_DAILY_MACROS.limit;
-    const remaining = calculateRemainingMacros(total, limit);
-
-    return {
-      date,
-      total,
-      limit,
-      remaining,
-      meals: todaysMeals
-    };
-  }, []);
-
   const signOut = async () => {
     console.log("[AppContext] Initiating sign out...");
     setIsSigningOut(true);
-    setIsLoading(true); // Indicate loading during sign out
+    // No need to set setIsLoading(true) here, the auth listener will handle UI state based on events.
+    // setIsLoading(true); 
     try {
     const { error } = await supabase.auth.signOut();
     if (error) {
             console.error("Error signing out:", error);
             Alert.alert("Error", `Sign out failed: ${error.message}`);
-             setIsSigningOut(false); // Reset flag on error
-             setIsLoading(false); // Reset loading on error
+        // Reset flags immediately on error so app can recover or user can retry.
+        setIsSigningOut(false); 
+        setIsLoading(false); 
     } else {
             console.log("[AppContext] Supabase signOut successful. Auth listener should handle state reset.");
-             // Don't manually reset state here - let the onAuthStateChange listener handle it
-             // resetStateToDefaults(); // REMOVED - let listener handle it
-             // setSession(null); // REMOVED
-             // setUser(null); // REMOVED
-             // setIsLoading(false); // REMOVED - Listener will set this after reset
-             // isSigningOut will be reset by the listener when SIGNED_OUT is processed
+        // isSigningOut will be reset by the listener when SIGNED_OUT is processed.
+        // setIsLoading will be managed by the listener.
         }
     } catch (e: any) {
         console.error("Unexpected error during sign out:", e);
         Alert.alert("Error", `An unexpected error occurred during sign out: ${e.message}`);
-         setIsSigningOut(false); // Reset flag on unexpected error
-         setIsLoading(false); // Reset loading on unexpected error
+      setIsSigningOut(false); 
+      setIsLoading(false); 
     }
   };
+
+  // Function to check if food is keto-friendly based on macros
+  const checkIfFoodIsKetoFriendly = useCallback((macros: { carbs: number; fat: number; protein: number }) => {
+    // A food is keto-friendly if it has low carbs (typically less than 5-10g per serving)
+    // and higher fat content relative to carbs
+    const lowCarb = macros.carbs <= 5;
+    const highFat = macros.fat >= macros.carbs * 2;
+    
+    return lowCarb && highFat;
+  }, []);
 
   const contextValue = useMemo(() => ({
     foods,
@@ -938,7 +1024,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     signOut,
     favoriteFoods,
     addFavoriteFood,
-    removeFavoriteFood
+    removeFavoriteFood,
+    checkIfFoodIsKetoFriendly
   }), [
     foods,
     meals,
@@ -966,7 +1053,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     calculateMacrosForDay,
     favoriteFoods,
     addFavoriteFood,
-    removeFavoriteFood
+    removeFavoriteFood,
+    checkIfFoodIsKetoFriendly
   ]);
 
   return (
