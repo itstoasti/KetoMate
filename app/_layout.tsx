@@ -18,8 +18,8 @@ SplashScreen.preventAutoHideAsync();
 // Global key for onboarding status
 export const ONBOARDING_COMPLETE_KEY = 'onboarding_complete_v3';
 
-// FORCE LOGIN FLAG - set this to true to always show login screen at startup
-export const FORCE_LOGIN = true;
+// FORCE LOGIN FLAG - set this to false to allow session persistence
+export const FORCE_LOGIN = false;
 
 // Simple loading screen to prevent flashes
 function LoadingScreen() {
